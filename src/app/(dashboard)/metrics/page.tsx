@@ -11,6 +11,20 @@ import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getMetrics, getMetricsTimeseries, type AdminMetrics, type AdminMetricsDay } from "@/lib/adminApi";
 import { LONG_FORMAT_HEADER } from "@/lib/csv";
 import { toChartValue } from "@/lib/decimal";
+import { withAllChains } from "@/lib/chains";
+
+/*
+ * Each by-chain breakdown is padded to every supported chain before it's
+ * charted or exported. The backend only returns chains that have rows, so a
+ * chain with no settled volume or no captured revenue would otherwise be
+ * missing from the chart entirely rather than showing an honest zero.
+ *
+ * Zero money is written as "0" — a value this dashboard generated, deliberately
+ * not dressed up to look like one of the backend's formatted decimal strings.
+ */
+const emptyTransactions = (chain: string) => ({ chain, sends: 0, deposits: 0 });
+const emptyVolume = (chain: string) => ({ chain, sentUsdc: "0", depositedUsdc: "0" });
+const emptyRevenue = (chain: string) => ({ chain, feesUsdc: "0" });
 
 const RANGES = [7, 30, 90] as const;
 
@@ -29,20 +43,21 @@ function metricsCsvRows(data: AdminMetrics, timeseries: AdminMetricsDay[]): stri
   rows.push(["transactions.sends", "settled", "count", String(data.transactions.sends.settled)]);
   rows.push(["transactions.deposits", "total", "count", String(data.transactions.deposits.total)]);
   rows.push(["transactions.deposits", "settled", "count", String(data.transactions.deposits.settled)]);
-  for (const row of data.transactions.byChain) {
+  for (const row of withAllChains(data.transactions.byChain, emptyTransactions)) {
     rows.push(["transactions.byChain", row.chain, "sends", String(row.sends)]);
     rows.push(["transactions.byChain", row.chain, "deposits", String(row.deposits)]);
   }
 
   rows.push(["onChainVolume", "total", "sentUsdc", data.onChainVolume.sentUsdc]);
   rows.push(["onChainVolume", "total", "depositedUsdc", data.onChainVolume.depositedUsdc]);
-  for (const row of data.onChainVolume.byChain) {
+  for (const row of withAllChains(data.onChainVolume.byChain, emptyVolume)) {
     rows.push(["onChainVolume.byChain", row.chain, "sentUsdc", row.sentUsdc]);
     rows.push(["onChainVolume.byChain", row.chain, "depositedUsdc", row.depositedUsdc]);
   }
 
   rows.push(["revenue", "total", "totalFeesUsdc", data.revenue.totalFeesUsdc]);
-  for (const row of data.revenue.byChain) rows.push(["revenue.byChain", row.chain, "feesUsdc", row.feesUsdc]);
+  for (const row of withAllChains(data.revenue.byChain, emptyRevenue))
+    rows.push(["revenue.byChain", row.chain, "feesUsdc", row.feesUsdc]);
 
   // The trend chart is on screen too, so its days belong in the export.
   for (const day of timeseries) {
@@ -180,7 +195,7 @@ export default function MetricsPage() {
             <ChartSkeleton height={260} />
           ) : (
             <GroupedBar
-              data={data.onChainVolume.byChain.map((row) => ({
+              data={withAllChains(data.onChainVolume.byChain, emptyVolume).map((row) => ({
                 label: row.chain,
                 // Numeric fields size the bars; the *Display fields are what
                 // the tooltip shows, so no rendered figure comes from a float.
@@ -203,7 +218,7 @@ export default function MetricsPage() {
             <ChartSkeleton height={260} />
           ) : (
             <GroupedBar
-              data={data.transactions.byChain.map((row) => ({
+              data={withAllChains(data.transactions.byChain, emptyTransactions).map((row) => ({
                 label: row.chain,
                 sends: row.sends,
                 deposits: row.deposits,
@@ -222,7 +237,7 @@ export default function MetricsPage() {
             <ChartSkeleton />
           ) : (
             <CategoryBar
-              data={data.revenue.byChain.map((row) => ({
+              data={withAllChains(data.revenue.byChain, emptyRevenue).map((row) => ({
                 label: row.chain,
                 value: toChartValue(row.feesUsdc),
                 display: row.feesUsdc,

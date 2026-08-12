@@ -9,6 +9,17 @@ import { CategoryBar } from "@/components/charts/CategoryBar";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getOverview, type AdminOverview } from "@/lib/adminApi";
 import { LONG_FORMAT_HEADER } from "@/lib/csv";
+import { withAllChains } from "@/lib/chains";
+
+/**
+ * The backend stores the EVM wallet provider under its implementation name
+ * ("aws-kms"). That's an internal detail — what matters on an ops dashboard is
+ * which family of wallet it is, so it reads as "evm" here. Only the label is
+ * remapped; the value the backend sent is what goes into the CSV export.
+ */
+function providerLabel(provider: string): string {
+  return provider === "aws-kms" ? "evm" : provider;
+}
 
 /**
  * Every number on this page, in `section,label,metric,value` rows. Money keeps
@@ -21,7 +32,10 @@ function overviewCsvRows(data: AdminOverview): string[][] {
   rows.push(["users", "kycVerified", "count", String(data.users.kycVerified)]);
 
   rows.push(["wallets", "total", "count", String(data.wallets.total)]);
-  for (const row of data.wallets.byChain) rows.push(["wallets.byChain", row.chain, "count", String(row.count)]);
+  // Zero-filled the same way the charts are, so the export still contains every
+  // number that was on screen — including the zeros.
+  for (const row of withAllChains(data.wallets.byChain, (chain) => ({ chain, count: 0 })))
+    rows.push(["wallets.byChain", row.chain, "count", String(row.count)]);
   for (const row of data.wallets.byProvider) rows.push(["wallets.byProvider", row.provider, "count", String(row.count)]);
 
   for (const row of data.balances.byChainAndToken) {
@@ -31,7 +45,8 @@ function overviewCsvRows(data: AdminOverview): string[][] {
 
   rows.push(["sends", "total", "count", String(data.sends.total)]);
   for (const row of data.sends.byState) rows.push(["sends.byState", row.state, "count", String(row.count)]);
-  for (const row of data.sends.byChain) rows.push(["sends.byChain", row.chain, "count", String(row.count)]);
+  for (const row of withAllChains(data.sends.byChain, (chain) => ({ chain, count: 0 })))
+    rows.push(["sends.byChain", row.chain, "count", String(row.count)]);
 
   rows.push(["deposits", "total", "count", String(data.deposits.total)]);
   for (const row of data.deposits.byState) rows.push(["deposits.byState", row.state, "count", String(row.count)]);
@@ -78,20 +93,31 @@ export default function OverviewPage() {
 
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="Wallets by chain" />
+          {/* Counts wallet *rows*, and one KMS key derives a single address
+              valid on every EVM chain — so a user's EVM wallet is stored once,
+              tagged with the default chain. Base and Optimism reading 0 here
+              means "no wallet rows recorded against them", not "unusable". */}
+          <CardHeader title="Wallets by chain" hint="One EVM row per user — the same address works on all EVM chains" />
           {loading || !data ? (
             <ChartSkeleton />
           ) : (
-            <CategoryBar data={data.wallets.byChain.map((r) => ({ label: r.chain, value: r.count }))} />
+            <CategoryBar
+              data={withAllChains(data.wallets.byChain, (chain) => ({ chain, count: 0 })).map((r) => ({
+                label: r.chain,
+                value: r.count,
+              }))}
+            />
           )}
         </Card>
 
         <Card>
-          <CardHeader title="Wallets by provider" hint="aws-kms, Blockradar, Stellar, Solana" />
+          <CardHeader title="Wallets by provider" hint="evm, Stellar, Solana" />
           {loading || !data ? (
             <ChartSkeleton />
           ) : (
-            <CategoryBar data={data.wallets.byProvider.map((r) => ({ label: r.provider, value: r.count }))} />
+            <CategoryBar
+              data={data.wallets.byProvider.map((r) => ({ label: providerLabel(r.provider), value: r.count }))}
+            />
           )}
         </Card>
 
@@ -109,7 +135,12 @@ export default function OverviewPage() {
           {loading || !data ? (
             <ChartSkeleton />
           ) : (
-            <CategoryBar data={data.sends.byChain.map((r) => ({ label: r.chain, value: r.count }))} />
+            <CategoryBar
+              data={withAllChains(data.sends.byChain, (chain) => ({ chain, count: 0 })).map((r) => ({
+                label: r.chain,
+                value: r.count,
+              }))}
+            />
           )}
         </Card>
 

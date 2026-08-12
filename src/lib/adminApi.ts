@@ -103,10 +103,30 @@ export interface AdminSendDiagnostic {
   feeSweepTrigger: string | null;
 }
 
-export interface AdminTreasuryEntry {
+/**
+ * One wallet's live on-chain balance. Mirrors the backend's `WalletBalance`
+ * in domain/admin/treasury.ts.
+ *
+ * Every field except `chain` is nullable because the backend isolates per-chain
+ * failures rather than failing the whole snapshot: a chain whose RPC is down or
+ * whose address isn't configured comes back with `error` set and balances null,
+ * while every other chain still reports. The UI has to render that per card.
+ */
+export interface TreasuryWalletBalance {
   chain: string;
-  address: string;
-  onChainBalance: string;
+  address: string | null;
+  /** USDC balance as a decimal string. Null when the read failed. */
+  usdc: string | null;
+  /** Gas balance. Null for fee-treasury wallets, which don't pay gas. */
+  native: { symbol: string; amount: string } | null;
+  error: string | null;
+}
+
+export interface TreasurySnapshot {
+  /** What the platform has earned — the dedicated fee-sweep destinations. */
+  feeTreasury: TreasuryWalletBalance[];
+  /** What pays out sends and must stay funded with gas. */
+  operational: TreasuryWalletBalance[];
 }
 
 // ---------------------------------------------------------------------------
@@ -148,6 +168,41 @@ export class AdminEndpointMissingError extends Error {
   constructor(message = "endpoint not available on this backend yet") {
     super(message);
     this.name = "AdminEndpointMissingError";
+  }
+}
+
+/**
+ * The endpoint answered 200 but not with the shape this client expects.
+ *
+ * Worth its own type because the useful response is completely different from
+ * a network error: nothing is down, the contract just doesn't match, and the
+ * fix is a conversation with whoever owns the endpoint. `received` carries the
+ * keys that actually came back so the UI can show them instead of making
+ * someone open devtools to find out.
+ */
+/**
+ * The key works, but not on this route.
+ *
+ * The backend runs two shared secrets: a read-only ADMIN_METRICS_KEY that
+ * covers overview/metrics/timeseries/treasury, and the full ADMIN_API_KEY that
+ * also covers /admin/sends and the write endpoints. Both failures come back as
+ * an identical 401, so this is distinguished by re-probing a route the metrics
+ * key is known to cover — see useAdminQuery. Signing the user out for this
+ * would be wrong: their key is fine, it just doesn't reach this page.
+ */
+export class AdminScopeError extends Error {
+  constructor(message = "this endpoint needs the full admin key") {
+    super(message);
+    this.name = "AdminScopeError";
+  }
+}
+
+export class AdminShapeError extends Error {
+  readonly received: string;
+  constructor(path: string, received: string) {
+    super(`${path} returned an unexpected shape`);
+    this.name = "AdminShapeError";
+    this.received = received;
   }
 }
 
@@ -213,12 +268,40 @@ export function getSends(params: { chain?: string; limit?: number }): Promise<{ 
   return adminFetch<{ sends: AdminSendDiagnostic[] }>(`/admin/sends${qs ? `?${qs}` : ""}`);
 }
 
+/** Describes what came back, for an AdminShapeError message. */
+function describeShape(value: unknown): string {
+  if (value === null) return "null"; // typeof null is "object" — say what it is
+  if (Array.isArray(value)) return `an array of ${value.length}`;
+  if (value && typeof value === "object") {
+    const keys = Object.keys(value as Record<string, unknown>);
+    return keys.length ? `an object with keys: ${keys.join(", ")}` : "an empty object";
+  }
+  return `a ${typeof value}`;
+}
+
 /**
- * Not deployed on the backend yet as of this writing — throws
- * AdminEndpointMissingError until it is. Shape is the one agreed in the issue:
- * address from the existing REMITTANCE_TREASURY_ADDRESS / Solana + Stellar
- * treasury config, balance read live per chain.
+ * Live on-chain balances, in two groups the backend keeps deliberately
+ * separate: `feeTreasury` is what the platform has earned (the dedicated
+ * fee-sweep addresses), `operational` is what pays out sends and has to stay
+ * funded with gas.
+ *
+ * Validated rather than trusted — this endpoint shipped after the dashboard
+ * did, and an unchecked property access on a mismatch takes the page down with
+ * a TypeError that tells whoever's looking at it nothing. Everything else here
+ * has been stable long enough to take at its word.
  */
-export function getTreasury(): Promise<{ treasury: AdminTreasuryEntry[] }> {
-  return adminFetch<{ treasury: AdminTreasuryEntry[] }>("/admin/treasury");
+export async function getTreasury(): Promise<TreasurySnapshot> {
+  const raw = await adminFetch<unknown>("/admin/treasury");
+
+  if (!raw || typeof raw !== "object") throw new AdminShapeError("/admin/treasury", describeShape(raw));
+
+  const snapshot = raw as { feeTreasury?: unknown; operational?: unknown };
+  if (!Array.isArray(snapshot.feeTreasury) || !Array.isArray(snapshot.operational)) {
+    throw new AdminShapeError("/admin/treasury", describeShape(raw));
+  }
+
+  return {
+    feeTreasury: snapshot.feeTreasury as TreasuryWalletBalance[],
+    operational: snapshot.operational as TreasuryWalletBalance[],
+  };
 }

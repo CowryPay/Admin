@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { AdminEndpointMissingError, AdminNotConfiguredError } from "@/lib/adminApi";
+import { AdminEndpointMissingError, AdminNotConfiguredError, AdminScopeError, AdminShapeError } from "@/lib/adminApi";
 
 export function LoadingState({ label = "Loading…" }: { label?: string }) {
   return (
@@ -48,6 +48,25 @@ export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => v
   } else if (error instanceof AdminEndpointMissingError) {
     title = "This endpoint isn't deployed yet";
     detail = error.message;
+  } else if (error instanceof AdminScopeError) {
+    title = "This page needs the full admin key";
+    detail = (
+      <>
+        Your key works — the dashboard is still signed in — but the backend gates this endpoint behind{" "}
+        <code className="text-white">ADMIN_API_KEY</code> rather than the read-only{" "}
+        <code className="text-white">ADMIN_METRICS_KEY</code>. Log out and sign back in with the full admin key to see
+        it.
+      </>
+    );
+  } else if (error instanceof AdminShapeError) {
+    title = "The backend returned an unexpected shape";
+    detail = (
+      <>
+        {error.message}. Expected{" "}
+        <code className="text-white">{`{ feeTreasury: [...], operational: [...] }`}</code>, got {error.received}. The
+        endpoint is up — its response just doesn&apos;t match what this page reads.
+      </>
+    );
   }
 
   return (

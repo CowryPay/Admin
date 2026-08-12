@@ -26,9 +26,28 @@ The admin key is **not** an environment variable. See below.
 ## Auth model
 
 The backend has no per-admin-user system. Every `/admin/*` route compares an
-`x-admin-key` header against a single shared secret (`env.adminApiKey`, see the
-backend's `middleware/requireAdminKey.ts`). This dashboard is built against that
-reality rather than wrapping it in a login system the backend can't enforce:
+`x-admin-key` header against a shared secret — there are **two**, both in the
+backend's `middleware/requireAdminKey.ts`:
+
+| Key | Covers | Guard |
+| --- | --- | --- |
+| `ADMIN_METRICS_KEY` | `/admin/overview`, `/admin/metrics`, `/admin/metrics/timeseries`, `/admin/treasury` | `requireMetricsKey` |
+| `ADMIN_API_KEY` | all of the above **plus** `/admin/sends` and every write endpoint | `requireAdminKey` |
+
+`ADMIN_API_KEY` is a strict superset, so signing in with it unlocks everything.
+Signing in with the read-only metrics key works for three of the four pages;
+**Sends** will show a "needs the full admin key" message, because the backend
+still gates that read-only GET behind `requireAdminKey`.
+
+Both failures return an identical `401`, so the dashboard tells them apart by
+re-probing `/admin/overview` (which the metrics key does cover) before deciding.
+A key that fails there too is genuinely dead and triggers a sign-out; a key that
+still works there means the page is simply out of scope, and the session is left
+alone. Signing someone out mid-session because one page needs a broader key
+would be wrong.
+
+This dashboard is built against that reality rather than wrapping it in a login
+system the backend can't enforce:
 
 - The login screen is one field — an admin key, no username.
 - The key is verified by calling `GET /admin/overview` with it. 200 accepts it,
@@ -82,21 +101,45 @@ BigInt arithmetic for the same reason.
 
 ## Backend dependencies
 
-**`GET /admin/treasury` is not deployed yet** (currently 404s). The Treasury page
-is built and shows a "waiting on the backend" panel until it ships. Expected
-shape:
+`GET /admin/treasury` **has shipped**, but not in the shape this issue agreed
+(`{ treasury: [{ chain, address, onChainBalance }] }`). It returns two groups of
+live per-wallet balances, mirroring the backend's `TreasurySnapshot`:
 
 ```json
-{ "treasury": [ { "chain": "celo", "address": "0x…", "onChainBalance": "1234.5600" } ] }
+{
+  "feeTreasury":  [ { "chain": "celo", "address": "0x…", "usdc": "120.50", "native": null, "error": null } ],
+  "operational":  [ { "chain": "celo", "address": "0x…", "usdc": "50.00",
+                      "native": { "symbol": "CELO", "amount": "1.5" }, "error": null } ]
+}
 ```
 
-Address from the existing `REMITTANCE_TREASURY_ADDRESS` / Solana + Stellar
-treasury config; `onChainBalance` as a decimal string, read live per chain.
+The Treasury page reads that shape. Three consequences worth knowing:
+
+- **Every field but `chain` is nullable.** The backend isolates per-chain
+  failures, so a chain whose RPC is down or whose address isn't configured comes
+  back with `error` set and null balances while every other chain still reports.
+  Each card renders that state rather than assuming a number.
+- **`native` is the point of the operational group.** Those wallets pay out
+  sends and need gas; when they run dry, payouts and wallet creation fail
+  silently. Gas is shown per card, and a balance of exactly `0` is flagged. No
+  "low" threshold is invented — nobody has said what counts as low per chain.
+- **The ledger comparison is shown, not judged.** Operational wallets fund
+  payouts and aren't the only place user deposits sit, so a balance below the
+  ledger total is a normal state, and auto-flagging it as a shortfall would be
+  noise. Both figures sit side by side for a human to read.
 
 `GET /admin/metrics/timeseries` **already exists** on the backend (it was listed
 as a stretch item needing new backend work, but it's live and returns
 `{ days, timeseries: AdminMetricsDay[] }`). The Metrics trend chart uses it with
 a 7/30/90-day range control.
+
+### Open question for the backend
+
+`/admin/sends` is a read-only GET but is still guarded by `requireAdminKey`,
+while the other four dashboard reads moved to `requireMetricsKey`. That looks
+like an oversight — the stated point of the metrics key is that a leaked
+dashboard key can't reach *write* endpoints, and this isn't one. Until it moves,
+a metrics-key session can't open the Sends page.
 
 ## Deploying
 

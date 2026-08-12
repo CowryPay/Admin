@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AdminAuthError } from "@/lib/adminApi";
+import { AdminAuthError, AdminScopeError, getOverview } from "@/lib/adminApi";
 import { clearAdminKey } from "@/lib/adminKey";
 
 type QueryState<T> = {
@@ -43,25 +43,51 @@ export function useAdminQuery<T>(fetcher: () => Promise<T>, deps: unknown[]): Qu
     setLoading(true);
     setError(null);
 
-    fetcherRef
-      .current()
-      .then((result) => {
+    // One async function with a single try/catch, rather than an async handler
+    // passed to .catch() — that pattern returns a promise nobody awaits, so
+    // anything thrown inside the error path (including a re-probe failure)
+    // becomes an unhandled rejection instead of a state update, which the App
+    // Router surfaces as a bare "missing required error components" reload.
+    async function run() {
+      try {
+        const result = await fetcherRef.current();
         if (cancelled) return;
         setData(result);
         setLoading(false);
-      })
-      .catch((err: Error) => {
+      } catch (err) {
         if (cancelled) return;
+
         if (err instanceof AdminAuthError) {
-          // Wrong or rotated key — drop it and send them back to login rather
-          // than leaving a dead key in place to fail on the next page too.
-          clearAdminKey();
-          router.replace("/login");
+          // Two very different things produce an identical 401: a dead or
+          // rotated key, and a live read-only key hitting a route that needs
+          // the full admin key (/admin/sends). Re-probe the route the login
+          // screen verifies against to tell them apart — signing someone out
+          // mid-session because one page is out of scope would be wrong.
+          let keyStillValid = false;
+          try {
+            await getOverview();
+            keyStillValid = true;
+          } catch {
+            keyStillValid = false;
+          }
+          if (cancelled) return;
+
+          if (keyStillValid) {
+            setError(new AdminScopeError());
+            setLoading(false);
+          } else {
+            clearAdminKey();
+            router.replace("/login");
+          }
           return;
         }
-        setError(err);
+
+        setError(err instanceof Error ? err : new Error(String(err)));
         setLoading(false);
-      });
+      }
+    }
+
+    void run();
 
     return () => {
       cancelled = true;

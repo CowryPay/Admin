@@ -1,18 +1,18 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Card } from "@/components/ui/Card";
 import { ErrorState, LoadingState } from "@/components/ui/States";
 import { TableScroll, Td, Th } from "@/components/ui/Table";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
-import { getSends, type AdminSendDiagnostic } from "@/lib/adminApi";
+import { getOverview, getSends, type AdminSendDiagnostic } from "@/lib/adminApi";
 import { explorerUrlFor, truncateHash } from "@/lib/explorer";
+import { CHAINS } from "@/lib/chains";
 
-// The chains the backend issues wallets on. A fixed list rather than one
-// derived from the current page of results — filtering to a chain that has no
-// sends in the last 20 rows is a legitimate thing to want to do.
-const CHAINS = ["celo", "base", "optimism", "solana", "stellar"];
+// A fixed list rather than one derived from the current page of results —
+// filtering to a chain that has no sends in the last 20 rows is a legitimate
+// thing to want to do.
 const LIMITS = [20, 50, 100]; // backend caps at 100
 
 type FeeSweep =
@@ -121,8 +121,32 @@ export default function SendsPage() {
   const fetcher = useCallback(() => getSends({ chain: chain || undefined, limit }), [chain, limit]);
   const { data, error, loading, reload } = useAdminQuery(fetcher, [chain, limit]);
 
+  // /admin/sends returns a page of rows with no total, so the denominator comes
+  // from /admin/overview — which already counts every send, and counts them per
+  // chain, so the figure stays right when a chain filter is applied.
+  const overviewFetcher = useCallback(() => getOverview(), []);
+  const overview = useAdminQuery(overviewFetcher, []);
+
   const sends = data?.sends ?? [];
   const neverSwept = sends.filter((send) => send.feeSweepTrigger === null).length;
+
+  const total = useMemo(() => {
+    if (!overview.data) return null;
+    if (!chain) return overview.data.sends.total;
+    // A chain with no sends at all is absent from byChain, which means zero
+    // rather than unknown.
+    return overview.data.sends.byChain.find((row) => row.chain.toLowerCase() === chain.toLowerCase())?.count ?? 0;
+  }, [overview.data, chain]);
+
+  const scope = chain ? ` on ${chain}` : "";
+  const countLabel =
+    total === null
+      ? `Latest ${sends.length}${scope}` // overview unavailable — no denominator to show
+      : total === 0
+        ? `No sends${scope} yet`
+        : sends.length >= total
+          ? `All ${total} send${total === 1 ? "" : "s"}${scope}`
+          : `Latest ${sends.length} from a total of ${total} sends${scope}`;
 
   const selectClass =
     "rounded-lg border border-cowry-border bg-cowry-card px-3 py-1.5 text-sm text-white outline-none transition focus:border-cowry-green";
@@ -175,6 +199,17 @@ export default function SendsPage() {
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
       {loading ? <LoadingState label="Loading sends…" /> : null}
+
+      {!loading && !error ? (
+        <p className="tabular text-sm text-cowry-muted">
+          {countLabel}
+          {total !== null && sends.length < total ? (
+            <span className="ml-2 text-xs">
+              (newest first — raise the limit to see more, capped at 100)
+            </span>
+          ) : null}
+        </p>
+      ) : null}
 
       {!loading && !error ? (
         <Card className="p-0">
