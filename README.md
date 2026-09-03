@@ -74,7 +74,16 @@ on these pages was fetched without one.
 | Overview | `GET /admin/overview` | Ops health: users, wallets, ledger balances, sends, deposits, recipients — all attempts, not just settled. |
 | Metrics | `GET /admin/metrics` + `GET /admin/metrics/timeseries` | Investor-facing, settled activity only: active users, settled counts, on-chain volume, revenue, and day-by-day trend. |
 | Sends | `GET /admin/sends?chain=&limit=` | "Why didn't the fee reach treasury" — each send's fee beside what the fee-sweep step actually logged. |
+| Cross-chain sends | `GET /admin/cross-chain-sends?sourceChain=&destinationChain=&limit=` | Sends that move funds across chains (Stellar included, as both source and destination); a manual-refund action for STUCK rows via `POST /admin/cross-chain-sends/:id/manual-refund`. |
 | Treasury | `GET /admin/treasury` | Trust-but-verify: live on-chain treasury balances next to the ledger's totals. |
+
+**Cross-chain sends is speculative.** Every other page's response type is
+copied field-for-field from a backend source file this dashboard's authors
+could read (see `src/lib/adminApi.ts`'s header comment). This one isn't —
+`AdminCrossChainSend`'s fields (`sourceChain`/`destinationChain`/`state`/etc.)
+are a best-effort guess modeled on `AdminSendDiagnostic`, written before the
+endpoint's real response shape was available. Treat field names as
+provisional and correct them against the first real response.
 
 ### CSV export
 
@@ -98,6 +107,16 @@ number. That conversion is isolated in `toChartValue()` in `src/lib/decimal.ts`,
 is used only to size marks, and is never what you read — tooltips and labels are
 handed the original string. Treasury's ledger-vs-chain comparison is exact
 BigInt arithmetic for the same reason.
+
+The Metrics page's headline USDC figures — sent, deposited, withdrawn,
+cross-chain sent, their sum, and revenue — are the one surface with `$`/comma
+formatting and 2-decimal rounding, via `formatUsd()` in `src/lib/decimal.ts`.
+Rounding is exact BigInt half-up division, still no `Number()` round-trip, so
+a value with more precision than 2 decimals (e.g. a client-side sum, or a
+backend figure carrying float noise) is rounded the way a calculator would
+rather than shown with every digit intact. That's a deliberate product
+decision for those fields specifically, not a reversal of the convention
+above; their CSV export still writes the backend's plain decimal string.
 
 ## Backend dependencies
 

@@ -83,3 +83,68 @@ export function toChartValue(value: string): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : 0;
 }
+
+/**
+ * Exact sum of decimal strings, as a decimal string — via BigInt on a common
+ * scale, same approach as `subtractDecimalStrings`. Used for client-side
+ * totals (e.g. "Total Volume") the backend reports as separate fields rather
+ * than a pre-summed one. Non-decimal inputs are treated as "0" rather than
+ * failing the whole sum, since a metrics dashboard should still total what it
+ * can rather than blank out on one bad field.
+ */
+export function sumDecimalStrings(...values: string[]): string {
+  let scale = 0;
+  const parsedValues = values.map((value) => parseDecimal(value) ?? { negative: false, intPart: "0", fracPart: "" });
+  for (const parsed of parsedValues) scale = Math.max(scale, parsed.fracPart.length);
+
+  let total = 0n;
+  for (const parsed of parsedValues) {
+    const magnitude = BigInt(parsed.intPart + parsed.fracPart.padEnd(scale, "0"));
+    total += parsed.negative ? -magnitude : magnitude;
+  }
+
+  const negative = total < 0n;
+  const digits = (negative ? -total : total).toString().padStart(scale + 1, "0");
+  const intPart = digits.slice(0, digits.length - scale) || "0";
+  const fracPart = scale > 0 ? digits.slice(digits.length - scale) : "";
+
+  return `${negative ? "-" : ""}${intPart}${fracPart ? `.${fracPart}` : ""}`;
+}
+
+/**
+ * Decimal string → "$1,234.56" for display, rounded to exactly 2 decimal
+ * places (half-up) via BigInt integer division — not a Number() round-trip.
+ * A value with more precision (e.g. a client-side sum of several fields) is
+ * rounded the same way a calculator would, not shown with every digit intact.
+ *
+ * Deliberately separate from the rest of this file's raw-string-only
+ * convention: the Metrics page's headline USDC figures (volume and revenue)
+ * are the one surface product asked to carry $/comma formatting client-side,
+ * since the API intentionally returns them as plain numbers. Every other page
+ * in the dashboard keeps rendering money verbatim.
+ */
+export function formatUsd(value: string): string {
+  const parsed = parseDecimal(value);
+  if (!parsed) return value;
+
+  const scale = parsed.fracPart.length;
+  const digits = parsed.intPart + parsed.fracPart;
+  const magnitude = BigInt(digits === "" ? "0" : digits); // non-negative; sign is applied separately below
+
+  let rounded: bigint;
+  if (scale > 2) {
+    const divisor = 10n ** BigInt(scale - 2);
+    rounded = (magnitude + divisor / 2n) / divisor; // half-up
+  } else if (scale < 2) {
+    rounded = magnitude * 10n ** BigInt(2 - scale);
+  } else {
+    rounded = magnitude;
+  }
+
+  const roundedStr = rounded.toString().padStart(3, "0");
+  const intPart = roundedStr.slice(0, roundedStr.length - 2) || "0";
+  const fracPart = roundedStr.slice(-2);
+
+  const grouped = intPart.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `${parsed.negative ? "-" : ""}$${grouped}.${fracPart}`;
+}
