@@ -10,7 +10,7 @@ import { TrendLines } from "@/components/charts/TrendLines";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getMetrics, getMetricsTimeseries, type AdminMetrics, type AdminMetricsDay } from "@/lib/adminApi";
 import { LONG_FORMAT_HEADER } from "@/lib/csv";
-import { toChartValue } from "@/lib/decimal";
+import { formatUsd, sumDecimalStrings, toChartValue } from "@/lib/decimal";
 import { withAllChains } from "@/lib/chains";
 
 /*
@@ -23,7 +23,13 @@ import { withAllChains } from "@/lib/chains";
  * not dressed up to look like one of the backend's formatted decimal strings.
  */
 const emptyTransactions = (chain: string) => ({ chain, sends: 0, deposits: 0 });
-const emptyVolume = (chain: string) => ({ chain, sentUsdc: "0", depositedUsdc: "0" });
+const emptyVolume = (chain: string) => ({
+  chain,
+  sentUsdc: "0",
+  depositedUsdc: "0",
+  withdrawnUsdc: "0",
+  crossChainSentUsdc: "0",
+});
 const emptyRevenue = (chain: string) => ({ chain, feesUsdc: "0" });
 
 const RANGES = [7, 30, 90] as const;
@@ -50,9 +56,13 @@ function metricsCsvRows(data: AdminMetrics, timeseries: AdminMetricsDay[]): stri
 
   rows.push(["onChainVolume", "total", "sentUsdc", data.onChainVolume.sentUsdc]);
   rows.push(["onChainVolume", "total", "depositedUsdc", data.onChainVolume.depositedUsdc]);
+  rows.push(["onChainVolume", "total", "withdrawnUsdc", data.onChainVolume.withdrawnUsdc]);
+  rows.push(["onChainVolume", "total", "crossChainSentUsdc", data.onChainVolume.crossChainSentUsdc]);
   for (const row of withAllChains(data.onChainVolume.byChain, emptyVolume)) {
     rows.push(["onChainVolume.byChain", row.chain, "sentUsdc", row.sentUsdc]);
     rows.push(["onChainVolume.byChain", row.chain, "depositedUsdc", row.depositedUsdc]);
+    rows.push(["onChainVolume.byChain", row.chain, "withdrawnUsdc", row.withdrawnUsdc]);
+    rows.push(["onChainVolume.byChain", row.chain, "crossChainSentUsdc", row.crossChainSentUsdc]);
   }
 
   rows.push(["revenue", "total", "totalFeesUsdc", data.revenue.totalFeesUsdc]);
@@ -65,6 +75,8 @@ function metricsCsvRows(data: AdminMetrics, timeseries: AdminMetricsDay[]): stri
     rows.push(["metrics.timeseries", day.date, "depositsCount", String(day.depositsCount)]);
     rows.push(["metrics.timeseries", day.date, "sentUsdc", day.sentUsdc]);
     rows.push(["metrics.timeseries", day.date, "depositedUsdc", day.depositedUsdc]);
+    rows.push(["metrics.timeseries", day.date, "withdrawnUsdc", day.withdrawnUsdc]);
+    rows.push(["metrics.timeseries", day.date, "crossChainSentUsdc", day.crossChainSentUsdc]);
     rows.push(["metrics.timeseries", day.date, "feesUsdc", day.feesUsdc]);
   }
 
@@ -127,16 +139,50 @@ export default function MetricsPage() {
           value={loading || !data ? "—" : data.transactions.deposits.settled.toLocaleString()}
           hint={data ? `of ${data.transactions.deposits.total.toLocaleString()} attempted` : undefined}
         />
-        {/* Money: the backend's decimal string, rendered exactly as received. */}
+        {/* Total Volume sums every on-chain flow the backend now reports —
+            not just sent + deposited — so it doesn't undercount withdrawals
+            and cross-chain sends. */}
         <StatCard
-          label="Volume sent"
-          value={loading || !data ? "—" : data.onChainVolume.sentUsdc}
-          hint="USDC, settled only"
+          label="Total volume"
+          value={
+            loading || !data
+              ? "—"
+              : formatUsd(
+                  sumDecimalStrings(
+                    data.onChainVolume.sentUsdc,
+                    data.onChainVolume.depositedUsdc,
+                    data.onChainVolume.withdrawnUsdc,
+                    data.onChainVolume.crossChainSentUsdc,
+                  ),
+                )
+          }
+          hint="USDC, settled only — sent + deposited + withdrawn + cross-chain sent"
         />
         <StatCard
           label="Revenue"
-          value={loading || !data ? "—" : data.revenue.totalFeesUsdc}
+          value={loading || !data ? "—" : formatUsd(data.revenue.totalFeesUsdc)}
           hint="USDC fees captured on settled sends"
+        />
+      </div>
+
+      <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+        <StatCard
+          label="Sent"
+          value={loading || !data ? "—" : formatUsd(data.onChainVolume.sentUsdc)}
+        />
+        <StatCard
+          label="Deposited"
+          value={loading || !data ? "—" : formatUsd(data.onChainVolume.depositedUsdc)}
+        />
+        <StatCard
+          label="Withdrawn"
+          value={loading || !data ? "—" : formatUsd(data.onChainVolume.withdrawnUsdc)}
+          hint="crypto withdrawals"
+        />
+        <StatCard
+          label="Cross-chain sent"
+          value={loading || !data ? "—" : formatUsd(data.onChainVolume.crossChainSentUsdc)}
+          hint="e.g. Base/Optimism/Solana ↔ Stellar"
         />
       </div>
 
@@ -173,11 +219,11 @@ export default function MetricsPage() {
             data={timeseries.map((day) => ({
               label: day.date.slice(5), // MM-DD — the year is the same across the window
               sent: toChartValue(day.sentUsdc),
-              sentDisplay: day.sentUsdc,
+              sentDisplay: formatUsd(day.sentUsdc),
               deposited: toChartValue(day.depositedUsdc),
-              depositedDisplay: day.depositedUsdc,
+              depositedDisplay: formatUsd(day.depositedUsdc),
               fees: toChartValue(day.feesUsdc),
-              feesDisplay: day.feesUsdc,
+              feesDisplay: formatUsd(day.feesUsdc),
             }))}
             series={[
               { key: "sent", displayKey: "sentDisplay", name: "Sent USDC" },
@@ -188,9 +234,35 @@ export default function MetricsPage() {
         )}
       </Card>
 
+      <Card>
+        <CardHeader
+          title="Withdrawals & cross-chain sends over time"
+          hint="USDC per day — crypto withdrawals and cross-chain sends"
+        />
+        {trend.error ? (
+          <ErrorState error={trend.error} onRetry={trend.reload} />
+        ) : trend.loading ? (
+          <ChartSkeleton height={280} />
+        ) : (
+          <TrendLines
+            data={timeseries.map((day) => ({
+              label: day.date.slice(5),
+              withdrawn: toChartValue(day.withdrawnUsdc),
+              withdrawnDisplay: formatUsd(day.withdrawnUsdc),
+              crossChainSent: toChartValue(day.crossChainSentUsdc),
+              crossChainSentDisplay: formatUsd(day.crossChainSentUsdc),
+            }))}
+            series={[
+              { key: "withdrawn", displayKey: "withdrawnDisplay", name: "Withdrawn USDC" },
+              { key: "crossChainSent", displayKey: "crossChainSentDisplay", name: "Cross-chain sent USDC" },
+            ]}
+          />
+        )}
+      </Card>
+
       <div className="grid gap-4 lg:grid-cols-2">
         <Card>
-          <CardHeader title="On-chain volume by chain" hint="USDC, settled only" />
+          <CardHeader title="On-chain volume by chain" hint="USDC, settled only — sent and deposited" />
           {loading || !data ? (
             <ChartSkeleton height={260} />
           ) : (
@@ -200,13 +272,37 @@ export default function MetricsPage() {
                 // Numeric fields size the bars; the *Display fields are what
                 // the tooltip shows, so no rendered figure comes from a float.
                 sent: toChartValue(row.sentUsdc),
-                sentDisplay: row.sentUsdc,
+                sentDisplay: formatUsd(row.sentUsdc),
                 deposited: toChartValue(row.depositedUsdc),
-                depositedDisplay: row.depositedUsdc,
+                depositedDisplay: formatUsd(row.depositedUsdc),
               }))}
               series={[
                 { key: "sent", displayKey: "sentDisplay", name: "Sent USDC" },
                 { key: "deposited", displayKey: "depositedDisplay", name: "Deposited USDC" },
+              ]}
+            />
+          )}
+        </Card>
+
+        <Card>
+          <CardHeader
+            title="Withdrawals & cross-chain sends by chain"
+            hint="USDC, settled only — includes Stellar as a cross-chain source and destination"
+          />
+          {loading || !data ? (
+            <ChartSkeleton height={260} />
+          ) : (
+            <GroupedBar
+              data={withAllChains(data.onChainVolume.byChain, emptyVolume).map((row) => ({
+                label: row.chain,
+                withdrawn: toChartValue(row.withdrawnUsdc),
+                withdrawnDisplay: formatUsd(row.withdrawnUsdc),
+                crossChainSent: toChartValue(row.crossChainSentUsdc),
+                crossChainSentDisplay: formatUsd(row.crossChainSentUsdc),
+              }))}
+              series={[
+                { key: "withdrawn", displayKey: "withdrawnDisplay", name: "Withdrawn USDC" },
+                { key: "crossChainSent", displayKey: "crossChainSentDisplay", name: "Cross-chain sent USDC" },
               ]}
             />
           )}
@@ -240,7 +336,7 @@ export default function MetricsPage() {
               data={withAllChains(data.revenue.byChain, emptyRevenue).map((row) => ({
                 label: row.chain,
                 value: toChartValue(row.feesUsdc),
-                display: row.feesUsdc,
+                display: formatUsd(row.feesUsdc),
               }))}
               emptyLabel="No fees captured yet"
             />

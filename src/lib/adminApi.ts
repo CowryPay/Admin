@@ -65,7 +65,17 @@ export interface AdminMetrics {
   onChainVolume: {
     sentUsdc: string;
     depositedUsdc: string;
-    byChain: { chain: string; sentUsdc: string; depositedUsdc: string }[];
+    /** Crypto withdrawals — previously invisible to reporting. */
+    withdrawnUsdc: string;
+    /** Base/Optimism/Solana/Stellar → any other chain, in either direction. */
+    crossChainSentUsdc: string;
+    byChain: {
+      chain: string;
+      sentUsdc: string;
+      depositedUsdc: string;
+      withdrawnUsdc: string;
+      crossChainSentUsdc: string;
+    }[];
   };
   revenue: {
     totalFeesUsdc: string;
@@ -79,7 +89,31 @@ export interface AdminMetricsDay {
   depositsCount: number;
   sentUsdc: string;
   depositedUsdc: string;
+  withdrawnUsdc: string;
+  crossChainSentUsdc: string;
   feesUsdc: string;
+}
+
+/**
+ * Speculative client type for GET /admin/cross-chain-sends. Unlike everything
+ * else in this file, this isn't mirrored from a backend source file this
+ * dashboard's authors could read — the endpoint (and its manual-refund
+ * write, below) is described by the feature ticket only, not a schema. Field
+ * names follow the closest real analog, AdminSendDiagnostic's
+ * id/chain/amountHuman/state shape, with `chain` split into
+ * `sourceChain`/`destinationChain`. Treat every field here as provisional
+ * until checked against a real response and correct on mismatch.
+ */
+export interface AdminCrossChainSend {
+  id: string;
+  sourceChain: string;
+  destinationChain: string;
+  amountHuman: string;
+  state: string;
+  sourceTxHash: string | null;
+  destinationTxHash: string | null;
+  createdAt: string;
+  completedAt: string | null;
 }
 
 export interface AdminSendDiagnostic {
@@ -214,6 +248,18 @@ export class AdminShapeError extends Error {
  * `key` is passed explicitly only by the login screen, which needs to test a
  * candidate key before storing it. Every other call reads the stored one.
  */
+async function handleAdminResponse<T>(path: string, res: Response): Promise<T> {
+  if (res.status === 401) throw new AdminAuthError();
+  if (res.status === 503) throw new AdminNotConfiguredError();
+  if (res.status === 404) throw new AdminEndpointMissingError(`${path} is not available on this backend yet`);
+
+  if (!res.ok) {
+    const err = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(err.error ?? `${path} failed (${res.status})`);
+  }
+  return res.json() as Promise<T>;
+}
+
 async function adminFetch<T>(path: string, key?: string): Promise<T> {
   const adminKey = key ?? getAdminKey();
   if (!adminKey) throw new AdminAuthError("no admin key");
@@ -226,15 +272,25 @@ async function adminFetch<T>(path: string, key?: string): Promise<T> {
     cache: "no-store",
   });
 
-  if (res.status === 401) throw new AdminAuthError();
-  if (res.status === 503) throw new AdminNotConfiguredError();
-  if (res.status === 404) throw new AdminEndpointMissingError(`${path} is not available on this backend yet`);
+  return handleAdminResponse<T>(path, res);
+}
 
-  if (!res.ok) {
-    const err = (await res.json().catch(() => ({}))) as { error?: string };
-    throw new Error(err.error ?? `${path} failed (${res.status})`);
-  }
-  return res.json() as Promise<T>;
+/** POST for the small set of write endpoints (e.g. manual-refund). */
+async function adminPost<T>(path: string, body?: unknown): Promise<T> {
+  const adminKey = getAdminKey();
+  if (!adminKey) throw new AdminAuthError("no admin key");
+
+  const res = await fetch(`${API_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-admin-key": adminKey,
+    },
+    body: body !== undefined ? JSON.stringify(body) : undefined,
+    cache: "no-store",
+  });
+
+  return handleAdminResponse<T>(path, res);
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +322,29 @@ export function getSends(params: { chain?: string; limit?: number }): Promise<{ 
   if (params.limit) query.set("limit", String(params.limit));
   const qs = query.toString();
   return adminFetch<{ sends: AdminSendDiagnostic[] }>(`/admin/sends${qs ? `?${qs}` : ""}`);
+}
+
+/** `limit` defaults to 20 backend-side and is capped there at 100, matching getSends. */
+export function getCrossChainSends(params: {
+  sourceChain?: string;
+  destinationChain?: string;
+  limit?: number;
+}): Promise<{ crossChainSends: AdminCrossChainSend[] }> {
+  const query = new URLSearchParams();
+  if (params.sourceChain) query.set("sourceChain", params.sourceChain);
+  if (params.destinationChain) query.set("destinationChain", params.destinationChain);
+  if (params.limit) query.set("limit", String(params.limit));
+  const qs = query.toString();
+  return adminFetch<{ crossChainSends: AdminCrossChainSend[] }>(`/admin/cross-chain-sends${qs ? `?${qs}` : ""}`);
+}
+
+/**
+ * Chain-agnostic on the backend per the feature ticket, so this should work
+ * the same for a Stellar-sourced STUCK row as for any other chain — nothing
+ * chain-specific belongs on this call.
+ */
+export function manualRefundCrossChainSend(id: string): Promise<unknown> {
+  return adminPost(`/admin/cross-chain-sends/${id}/manual-refund`);
 }
 
 /** Describes what came back, for an AdminShapeError message. */

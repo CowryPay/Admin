@@ -8,6 +8,7 @@ const LINKS = [
   { href: "/overview", label: "Overview" },
   { href: "/metrics", label: "Metrics" },
   { href: "/sends", label: "Sends" },
+  { href: "/cross-chain-sends", label: "Cross-chain sends" },
   { href: "/treasury", label: "Treasury" },
 ];
 
