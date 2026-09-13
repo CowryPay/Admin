@@ -17,6 +17,16 @@ import { CHAINS } from "@/lib/chains";
 
 const LIMITS = [20, 50, 100]; // matches the Sends page's assumed backend cap
 
+const STATE_FILTERS = ["All", "Success", "Stuck", "Failed", "Refunded"] as const;
+type StateFilter = (typeof STATE_FILTERS)[number];
+
+function matchesStateFilter(send: AdminCrossChainSend, filter: StateFilter): boolean {
+  if (filter === "All") return true;
+  const state = send.state.toUpperCase();
+  if (filter === "Success") return state === "COMPLETE";
+  return state === filter.toUpperCase();
+}
+
 type RefundState = "idle" | "confirming" | "submitting" | "done" | "error";
 
 function isStuck(send: AdminCrossChainSend): boolean {
@@ -164,6 +174,7 @@ export default function CrossChainSendsPage() {
   const [sourceChain, setSourceChain] = useState<string>("");
   const [destinationChain, setDestinationChain] = useState<string>("");
   const [limit, setLimit] = useState<number>(20);
+  const [stateFilter, setStateFilter] = useState<StateFilter>("Success");
 
   const fetcher = useCallback(
     () =>
@@ -177,6 +188,7 @@ export default function CrossChainSendsPage() {
   const { data, error, loading, reload } = useAdminQuery(fetcher, [sourceChain, destinationChain, limit]);
 
   const sends = data?.crossChainSends ?? [];
+  const visibleSends = sends.filter((send) => matchesStateFilter(send, stateFilter));
   const stuckCount = sends.filter(isStuck).length;
 
   const selectClass =
@@ -192,7 +204,11 @@ export default function CrossChainSendsPage() {
             can be pushed through with a manual refund.
           </p>
         </div>
-        <ExportCsvButton page="cross-chain-sends" disabled={!sends.length} rows={() => crossChainSendsCsvRows(sends)} />
+        <ExportCsvButton
+          page="cross-chain-sends"
+          disabled={!visibleSends.length}
+          rows={() => crossChainSendsCsvRows(visibleSends)}
+        />
       </div>
 
       <div className="flex flex-wrap items-center gap-3">
@@ -225,6 +241,21 @@ export default function CrossChainSendsPage() {
         </label>
 
         <label className="flex items-center gap-2 text-sm text-cowry-muted">
+          State
+          <select
+            value={stateFilter}
+            onChange={(event) => setStateFilter(event.target.value as StateFilter)}
+            className={selectClass}
+          >
+            {STATE_FILTERS.map((option) => (
+              <option key={option} value={option}>
+                {option}
+              </option>
+            ))}
+          </select>
+        </label>
+
+        <label className="flex items-center gap-2 text-sm text-cowry-muted">
           Limit
           <select value={limit} onChange={(event) => setLimit(Number(event.target.value))} className={selectClass}>
             {LIMITS.map((option) => (
@@ -248,8 +279,12 @@ export default function CrossChainSendsPage() {
 
       {!loading && !error ? (
         <Card className="p-0">
-          {sends.length === 0 ? (
-            <p className="p-6 text-sm text-cowry-muted">No cross-chain sends match this filter.</p>
+          {visibleSends.length === 0 ? (
+            <p className="p-6 text-sm text-cowry-muted">
+              {sends.length === 0
+                ? "No cross-chain sends match this filter."
+                : "No sends match the current state filter."}
+            </p>
           ) : (
             <TableScroll>
               <table className="w-full min-w-[1180px] border-collapse">
@@ -267,7 +302,7 @@ export default function CrossChainSendsPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {sends.map((send) => (
+                  {visibleSends.map((send) => (
                     <tr
                       key={send.id}
                       className={`border-b border-cowry-border/50 last:border-0 ${
