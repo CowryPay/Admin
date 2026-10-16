@@ -91,7 +91,28 @@ function metricsCsvRows(data: AdminMetrics, timeseries: AdminMetricsDay[]): stri
  * its own readable table. Same backend strings, same zero-filled chains.
  */
 function tractionPdfSections(data: AdminMetrics, timeseries: AdminMetricsDay[]): PdfSection[] {
+  // Same sum as the Total volume card — every on-chain flow, not just sent +
+  // deposited — so the report's headline matches the screen.
+  const totalVolume = sumDecimalStrings(
+    data.onChainVolume.sentUsdc,
+    data.onChainVolume.depositedUsdc,
+    data.onChainVolume.withdrawnUsdc,
+    data.onChainVolume.crossChainSentUsdc,
+  );
+
   const sections: PdfSection[] = [
+    {
+      heading: "Headline",
+      rows: [
+        ["Metric", "Value"],
+        ["Total volume (USDC)", formatUsd(totalVolume)],
+        ["Revenue (USDC fees)", formatUsd(data.revenue.totalFeesUsdc)],
+        ["Total users", data.users.total.toLocaleString()],
+        ["Active last 30 days", data.users.activeLast30Days.toLocaleString()],
+        ["Sends settled", data.transactions.sends.settled.toLocaleString()],
+        ["Deposits settled", data.transactions.deposits.settled.toLocaleString()],
+      ],
+    },
     {
       heading: "Users",
       rows: [
@@ -134,13 +155,14 @@ function tractionPdfSections(data: AdminMetrics, timeseries: AdminMetricsDay[]):
     {
       heading: "On-chain volume (USDC)",
       rows: [
-        ["Chain", "Sent", "Deposited", "Withdrawn", "Cross-chain sent"],
+        ["Chain", "Sent", "Deposited", "Withdrawn", "Cross-chain sent", "Total"],
         ...withAllChains(data.onChainVolume.byChain, emptyVolume).map((row) => [
           row.chain,
           row.sentUsdc,
           row.depositedUsdc,
           row.withdrawnUsdc,
           row.crossChainSentUsdc,
+          sumDecimalStrings(row.sentUsdc, row.depositedUsdc, row.withdrawnUsdc, row.crossChainSentUsdc),
         ]),
         [
           "Total",
@@ -148,6 +170,7 @@ function tractionPdfSections(data: AdminMetrics, timeseries: AdminMetricsDay[]):
           data.onChainVolume.depositedUsdc,
           data.onChainVolume.withdrawnUsdc,
           data.onChainVolume.crossChainSentUsdc,
+          totalVolume,
         ],
       ],
     },
