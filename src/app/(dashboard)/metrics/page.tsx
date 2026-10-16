@@ -4,11 +4,13 @@ import { useCallback, useState } from "react";
 import { Card, CardHeader, StatCard } from "@/components/ui/Card";
 import { ChartSkeleton, ErrorState } from "@/components/ui/States";
 import { ExportCsvButton } from "@/components/ui/ExportCsvButton";
+import { ExportPdfButton } from "@/components/ui/ExportPdfButton";
 import { CategoryBar } from "@/components/charts/CategoryBar";
 import { GroupedBar } from "@/components/charts/GroupedBar";
 import { TrendLines } from "@/components/charts/TrendLines";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getMetrics, getMetricsTimeseries, type AdminMetrics, type AdminMetricsDay } from "@/lib/adminApi";
+import type { PdfSection } from "@/lib/pdf";
 import { LONG_FORMAT_HEADER } from "@/lib/csv";
 import { formatUsd, sumDecimalStrings, toChartValue } from "@/lib/decimal";
 import { withAllChains } from "@/lib/chains";
@@ -83,6 +85,102 @@ function metricsCsvRows(data: AdminMetrics, timeseries: AdminMetricsDay[]): stri
   return rows;
 }
 
+/**
+ * Growth numbers only — the PDF is a traction report to hand around, so it
+ * leaves out the long-format dump the CSV carries and lays each section out as
+ * its own readable table. Same backend strings, same zero-filled chains.
+ */
+function tractionPdfSections(data: AdminMetrics, timeseries: AdminMetricsDay[]): PdfSection[] {
+  const sections: PdfSection[] = [
+    {
+      heading: "Users",
+      rows: [
+        ["Metric", "Count"],
+        ["Total users", data.users.total.toLocaleString()],
+        ["Wallets created", data.wallets.totalCreated.toLocaleString()],
+        ["Active all time", data.users.activeAllTime.toLocaleString()],
+        ["Active last 30 days", data.users.activeLast30Days.toLocaleString()],
+        ["Active last 7 days", data.users.activeLast7Days.toLocaleString()],
+        ["Active today", data.users.activeToday.toLocaleString()],
+      ],
+    },
+    {
+      heading: "Transactions",
+      rows: [
+        ["Type", "Settled", "All attempts"],
+        [
+          "Sends",
+          data.transactions.sends.settled.toLocaleString(),
+          data.transactions.sends.total.toLocaleString(),
+        ],
+        [
+          "Deposits",
+          data.transactions.deposits.settled.toLocaleString(),
+          data.transactions.deposits.total.toLocaleString(),
+        ],
+      ],
+    },
+    {
+      heading: "Transactions by chain",
+      rows: [
+        ["Chain", "Sends", "Deposits"],
+        ...withAllChains(data.transactions.byChain, emptyTransactions).map((row) => [
+          row.chain,
+          row.sends.toLocaleString(),
+          row.deposits.toLocaleString(),
+        ]),
+      ],
+    },
+    {
+      heading: "On-chain volume (USDC)",
+      rows: [
+        ["Chain", "Sent", "Deposited", "Withdrawn", "Cross-chain sent"],
+        ...withAllChains(data.onChainVolume.byChain, emptyVolume).map((row) => [
+          row.chain,
+          row.sentUsdc,
+          row.depositedUsdc,
+          row.withdrawnUsdc,
+          row.crossChainSentUsdc,
+        ]),
+        [
+          "Total",
+          data.onChainVolume.sentUsdc,
+          data.onChainVolume.depositedUsdc,
+          data.onChainVolume.withdrawnUsdc,
+          data.onChainVolume.crossChainSentUsdc,
+        ],
+      ],
+    },
+    {
+      heading: "Revenue (USDC fees)",
+      rows: [
+        ["Chain", "Fees"],
+        ...withAllChains(data.revenue.byChain, emptyRevenue).map((row) => [row.chain, row.feesUsdc]),
+        ["Total", data.revenue.totalFeesUsdc],
+      ],
+    },
+  ];
+
+  if (timeseries.length) {
+    sections.push({
+      heading: "Daily trend",
+      rows: [
+        ["Date", "Sends", "Deposits", "Sent USDC", "Deposited USDC", "Fees USDC"],
+        ...timeseries.map((day) => [
+          day.date,
+          day.sendsCount.toLocaleString(),
+          day.depositsCount.toLocaleString(),
+          day.sentUsdc,
+          day.depositedUsdc,
+          day.feesUsdc,
+        ]),
+      ],
+    });
+  }
+
+  return sections;
+}
+
 export default function MetricsPage() {
   const [days, setDays] = useState<number>(30);
 
@@ -104,7 +202,17 @@ export default function MetricsPage() {
             beside the settled count, never folded into it.
           </p>
         </div>
-        <ExportCsvButton page="metrics" disabled={!data} rows={() => (data ? metricsCsvRows(data, timeseries) : [])} />
+        <div className="flex gap-2">
+          <ExportCsvButton page="metrics" disabled={!data} rows={() => (data ? metricsCsvRows(data, timeseries) : [])} />
+          <ExportPdfButton
+            page="traction"
+            title="Traction report"
+            label="Export traction PDF"
+            subtitle={`Settled activity only · daily trend: last ${days} days`}
+            disabled={!data}
+            sections={() => (data ? tractionPdfSections(data, timeseries) : [])}
+          />
+        </div>
       </div>
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
