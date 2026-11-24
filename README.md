@@ -31,7 +31,7 @@ backend's `middleware/requireAdminKey.ts`:
 
 | Key | Covers | Guard |
 | --- | --- | --- |
-| `ADMIN_METRICS_KEY` | `/admin/overview`, `/admin/metrics`, `/admin/metrics/timeseries`, `/admin/treasury` | `requireMetricsKey` |
+| `ADMIN_METRICS_KEY` | `/admin/overview`, `/admin/metrics`, `/admin/metrics/timeseries`, `/admin/treasury`, `/admin/liquidity`, `/admin/liquidity/revenue`, `/admin/onramp/deposits` | `requireMetricsKey` |
 | `ADMIN_API_KEY` | all of the above **plus** `/admin/sends` and every write endpoint | `requireAdminKey` |
 
 `ADMIN_API_KEY` is a strict superset, so signing in with it unlocks everything.
@@ -75,6 +75,7 @@ on these pages was fetched without one.
 | Metrics | `GET /admin/metrics` + `GET /admin/metrics/timeseries` | Investor-facing, settled activity only: active users, settled counts, on-chain volume, revenue, and day-by-day trend. |
 | Sends | `GET /admin/sends?chain=&limit=` | "Why didn't the fee reach treasury" — each send's fee beside what the fee-sweep step actually logged. |
 | Cross-chain sends | `GET /admin/cross-chain-sends?sourceChain=&destinationChain=&limit=` | Sends that move funds across chains (Stellar included, as both source and destination); a manual-refund action for STUCK rows via `POST /admin/cross-chain-sends/:id/manual-refund`. |
+| Liquidity | `GET /admin/liquidity/revenue?days=` + `GET /admin/liquidity` + `GET /admin/onramp/deposits?status=UNMATCHED` | Own liquidity via Nomba: revenue from Nomba off-ramps and on-ramps (fee + estimated FX spread − Nomba transfer fees) next to provider-fallback revenue (Paycrest/Quidax/Centiiv, fee only); how many NGN sends fell back; live naira float and stablecoin inventory; unmatched on-ramp payments. |
 | Treasury | `GET /admin/treasury` | Trust-but-verify: live on-chain treasury balances next to the ledger's totals. |
 
 **Cross-chain sends is speculative.** Every other page's response type is

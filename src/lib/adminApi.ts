@@ -384,3 +384,125 @@ export async function getTreasury(): Promise<TreasurySnapshot> {
     operational: snapshot.operational as TreasuryWalletBalance[],
   };
 }
+
+// ---------------------------------------------------------------------------
+// Own liquidity (Nomba) — off-ramp, on-ramp and provider fallback
+// ---------------------------------------------------------------------------
+
+/**
+ * GET /admin/liquidity/revenue — mirrors the backend's LiquidityRevenue in
+ * domain/admin/liquidityRevenue.ts.
+ *
+ * Unlike the rest of this file, money here comes back as plain numbers rounded
+ * to the cent/kobo, not decimal strings: the spread figures are estimates
+ * computed from the configured spread (the trade tables don't store the market
+ * mid rate), so there's no exact ledger string to preserve.
+ */
+export interface LiquidityRevenueDay {
+  date: string;
+  nombaOfframpUsd: number;
+  providerOfframpUsd: number;
+  onrampUsd: number;
+  liquidityRevenueUsd: number;
+  providerRevenueUsd: number;
+}
+
+export interface LiquidityRevenue {
+  days: number;
+  nombaEnabled: boolean;
+  spreadBps: { offramp: number; onramp: number };
+  totals: { liquidityRevenueUsd: number; providerRevenueUsd: number; totalRevenueUsd: number };
+  nombaOfframp: {
+    count: number;
+    volumeUsd: number;
+    payoutNgn: number;
+    feeUsd: number;
+    spreadUsd: number;
+    transferCostNgn: number;
+    transferCostUsd: number;
+    revenueUsd: number;
+  };
+  onramp: {
+    ordersCreated: number;
+    credited: number;
+    expired: number;
+    cancelled: number;
+    awaitingPayment: number;
+    volumeUsd: number;
+    receivedNgn: number;
+    feeUsd: number;
+    spreadUsd: number;
+    revenueUsd: number;
+    unmatched: { count: number; ngn: number };
+  };
+  providerOfframp: {
+    count: number;
+    volumeUsd: number;
+    feeUsd: number;
+    byProvider: { provider: string; count: number; volumeUsd: number; feeUsd: number }[];
+  };
+  ngnRouting: {
+    total: number;
+    viaNomba: number;
+    fellBack: number;
+    byProvider: { provider: string; count: number }[];
+  };
+  timeseries: LiquidityRevenueDay[];
+}
+
+/** GET /admin/liquidity — live Nomba float + company inventory + open alerts. */
+export interface LiquiditySnapshot {
+  nombaFloat: { balanceNgn: number | null; error: string | null };
+  companyInventory: {
+    chain: string;
+    tokenSymbol: string;
+    availableBalance: string;
+    reservedBalance: string;
+    bufferInUserPool: string;
+    updatedAt: string;
+  }[];
+  openAlerts: string[];
+  thresholds: {
+    nombaFloatLowNgn: number;
+    nombaFloatHighNgn: number;
+    inventoryLowUsd: number;
+    inventoryHighUsd: number;
+  };
+}
+
+export type OnrampDepositStatus = "CREDITED" | "UNMATCHED" | "REFUND_INITIATED" | "REFUNDED";
+
+/** One naira inflow into the Nomba sub-account. Mirrors OnrampDeposit in domain/onramp/repository.ts. */
+export interface OnrampDeposit {
+  id: string;
+  nombaTransactionId: string;
+  sessionId: string | null;
+  userId: string | null;
+  orderId: string | null;
+  amount: string;
+  senderName: string | null;
+  senderAccountNumber: string | null;
+  senderBankCode: string | null;
+  senderBankName: string | null;
+  narration: string | null;
+  paidAt: string | null;
+  status: OnrampDepositStatus;
+  reason: string | null;
+  refundReference: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** `days` is clamped to [1, 365] by the backend. */
+export function getLiquidityRevenue(days: number): Promise<LiquidityRevenue> {
+  return adminFetch<LiquidityRevenue>(`/admin/liquidity/revenue?days=${days}`);
+}
+
+export function getLiquidity(): Promise<LiquiditySnapshot> {
+  return adminFetch<LiquiditySnapshot>("/admin/liquidity");
+}
+
+/** Oldest first, capped at 200 backend-side. */
+export function getOnrampDeposits(status: OnrampDepositStatus): Promise<{ deposits: OnrampDeposit[] }> {
+  return adminFetch<{ deposits: OnrampDeposit[] }>(`/admin/onramp/deposits?status=${status}`);
+}
