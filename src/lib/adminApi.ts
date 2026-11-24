@@ -386,69 +386,8 @@ export async function getTreasury(): Promise<TreasurySnapshot> {
 }
 
 // ---------------------------------------------------------------------------
-// Own liquidity (Nomba) — off-ramp, on-ramp and provider fallback
+// Own liquidity (Nomba)
 // ---------------------------------------------------------------------------
-
-/**
- * GET /admin/liquidity/revenue — mirrors the backend's LiquidityRevenue in
- * domain/admin/liquidityRevenue.ts.
- *
- * Unlike the rest of this file, money here comes back as plain numbers rounded
- * to the cent/kobo, not decimal strings: the spread figures are estimates
- * computed from the configured spread (the trade tables don't store the market
- * mid rate), so there's no exact ledger string to preserve.
- */
-export interface LiquidityRevenueDay {
-  date: string;
-  nombaOfframpUsd: number;
-  providerOfframpUsd: number;
-  onrampUsd: number;
-  liquidityRevenueUsd: number;
-  providerRevenueUsd: number;
-}
-
-export interface LiquidityRevenue {
-  days: number;
-  nombaEnabled: boolean;
-  spreadBps: { offramp: number; onramp: number };
-  totals: { liquidityRevenueUsd: number; providerRevenueUsd: number; totalRevenueUsd: number };
-  nombaOfframp: {
-    count: number;
-    volumeUsd: number;
-    payoutNgn: number;
-    feeUsd: number;
-    spreadUsd: number;
-    transferCostNgn: number;
-    transferCostUsd: number;
-    revenueUsd: number;
-  };
-  onramp: {
-    ordersCreated: number;
-    credited: number;
-    expired: number;
-    cancelled: number;
-    awaitingPayment: number;
-    volumeUsd: number;
-    receivedNgn: number;
-    feeUsd: number;
-    spreadUsd: number;
-    revenueUsd: number;
-    unmatched: { count: number; ngn: number };
-  };
-  providerOfframp: {
-    count: number;
-    volumeUsd: number;
-    feeUsd: number;
-    byProvider: { provider: string; count: number; volumeUsd: number; feeUsd: number }[];
-  };
-  ngnRouting: {
-    total: number;
-    viaNomba: number;
-    fellBack: number;
-    byProvider: { provider: string; count: number }[];
-  };
-  timeseries: LiquidityRevenueDay[];
-}
 
 /** GET /admin/liquidity — live Nomba float + company inventory + open alerts. */
 export interface LiquiditySnapshot {
@@ -468,6 +407,11 @@ export interface LiquiditySnapshot {
     inventoryLowUsd: number;
     inventoryHighUsd: number;
   };
+}
+
+export interface LiquidityRevenue extends LiquiditySnapshot {
+  /** Platform fees on settled transactions, all time. Same figure as /admin/metrics' revenue. */
+  revenue: AdminMetrics["revenue"];
 }
 
 export type OnrampDepositStatus = "CREDITED" | "UNMATCHED" | "REFUND_INITIATED" | "REFUNDED";
@@ -493,9 +437,33 @@ export interface OnrampDeposit {
   updatedAt: string;
 }
 
-/** `days` is clamped to [1, 365] by the backend. */
-export function getLiquidityRevenue(days: number): Promise<LiquidityRevenue> {
-  return adminFetch<LiquidityRevenue>(`/admin/liquidity/revenue?days=${days}`);
+/**
+ * GET /admin/liquidity/revenue — the /admin/liquidity snapshot plus platform
+ * fee revenue (the same computeRevenue() /admin/metrics uses: settled sends,
+ * crypto withdrawals and cross-chain sends). Mirrors the route in the
+ * backend's routes/admin.ts.
+ *
+ * Validated rather than trusted, like getTreasury: it's new, and a shape
+ * mismatch should read as "unexpected shape", not take the page down.
+ */
+export async function getLiquidityRevenue(): Promise<LiquidityRevenue> {
+  const path = "/admin/liquidity/revenue";
+  const raw = await adminFetch<unknown>(path);
+  const body = raw as Partial<LiquidityRevenue> | null;
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !body.nombaFloat ||
+    !Array.isArray(body.companyInventory) ||
+    !Array.isArray(body.openAlerts) ||
+    !body.thresholds ||
+    !body.revenue ||
+    typeof body.revenue.totalFeesUsdc !== "string" ||
+    !Array.isArray(body.revenue.byChain)
+  ) {
+    throw new AdminShapeError(path, describeShape(raw));
+  }
+  return body as LiquidityRevenue;
 }
 
 export function getLiquidity(): Promise<LiquiditySnapshot> {

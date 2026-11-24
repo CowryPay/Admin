@@ -62,9 +62,8 @@ export function ErrorState({ error, onRetry }: { error: Error; onRetry?: () => v
     title = "The backend returned an unexpected shape";
     detail = (
       <>
-        {error.message}. Expected{" "}
-        <code className="text-white">{`{ feeTreasury: [...], operational: [...] }`}</code>, got {error.received}. The
-        endpoint is up — its response just doesn&apos;t match what this page reads.
+        {error.message}: got {error.received}. The endpoint is up — its response just doesn&apos;t match what this
+        page reads.
       </>
     );
   }
