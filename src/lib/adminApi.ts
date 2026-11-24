@@ -410,8 +410,12 @@ export interface LiquiditySnapshot {
 }
 
 export interface LiquidityRevenue extends LiquiditySnapshot {
-  /** Platform fees on settled transactions, all time. Same figure as /admin/metrics' revenue. */
-  revenue: AdminMetrics["revenue"];
+  /**
+   * Platform fees on settled transactions across EVERY provider and flow, all
+   * time — the same figure as /admin/metrics. Not shown on the Liquidity page,
+   * which only reports what our own (Nomba) liquidity earns, so not validated.
+   */
+  revenue?: AdminMetrics["revenue"];
 }
 
 export type OnrampDepositStatus = "CREDITED" | "UNMATCHED" | "REFUND_INITIATED" | "REFUNDED";
@@ -456,10 +460,7 @@ export async function getLiquidityRevenue(): Promise<LiquidityRevenue> {
     !body.nombaFloat ||
     !Array.isArray(body.companyInventory) ||
     !Array.isArray(body.openAlerts) ||
-    !body.thresholds ||
-    !body.revenue ||
-    typeof body.revenue.totalFeesUsdc !== "string" ||
-    !Array.isArray(body.revenue.byChain)
+    !body.thresholds
   ) {
     throw new AdminShapeError(path, describeShape(raw));
   }

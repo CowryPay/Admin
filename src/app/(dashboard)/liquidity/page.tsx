@@ -4,7 +4,6 @@ import { useCallback, type ReactNode } from "react";
 import { Card, CardHeader, StatCard } from "@/components/ui/Card";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui/States";
 import { TableScroll, Td, Th } from "@/components/ui/Table";
-import { CategoryBar } from "@/components/charts/CategoryBar";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getLiquidityRevenue, getOnrampDeposits, type LiquiditySnapshot, type OnrampDeposit } from "@/lib/adminApi";
 import { formatUsd, toChartValue } from "@/lib/decimal";
@@ -17,9 +16,11 @@ import { formatUsd, toChartValue } from "@/lib/decimal";
  * to Paycrest / Quidax / Centiiv. On-ramps (naira in → stablecoin out) sell
  * from our own stablecoin inventory.
  *
- * Everything above the unmatched-payments table comes from one call,
- * GET /admin/liquidity/revenue: the live float + inventory snapshot and
- * platform fee revenue.
+ * Float, inventory and alerts come from GET /admin/liquidity/revenue. Its
+ * `revenue` field is deliberately NOT shown: it's platform fees across every
+ * provider and flow, and this page should only show what our own liquidity
+ * (Nomba off-ramp + on-ramp) earns. That needs a Nomba-only figure from the
+ * backend.
  */
 
 const ngn = (n: number) =>
@@ -221,12 +222,7 @@ export default function LiquidityPage() {
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-        <StatCard
-          label="Platform fee revenue"
-          value={data ? formatUsd(data.revenue.totalFeesUsdc) : "—"}
-          hint="Settled sends, withdrawals and cross-chain sends"
-        />
+      <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
           label="Nomba float"
           value={data && data.nombaFloat.balanceNgn !== null ? ngn(data.nombaFloat.balanceNgn) : "—"}
@@ -260,17 +256,6 @@ export default function LiquidityPage() {
             <InventoryCard snapshot={data} />
           </div>
 
-          <Card>
-            <CardHeader title="Fee revenue by chain" hint="USD — platform fees on settled transactions" />
-            <CategoryBar
-              emptyLabel="No fee revenue yet"
-              data={data.revenue.byChain.map((r) => ({
-                label: r.chain,
-                value: toChartValue(r.feesUsdc),
-                display: formatUsd(r.feesUsdc),
-              }))}
-            />
-          </Card>
         </>
       ) : null}
 
