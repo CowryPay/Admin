@@ -1,9 +1,10 @@
 "use client";
 
-import { useCallback, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import { Card, CardHeader, StatCard } from "@/components/ui/Card";
 import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui/States";
 import { TableScroll, Td, Th } from "@/components/ui/Table";
+import { TrendLines } from "@/components/charts/TrendLines";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import { getLiquidityRevenue, getOnrampDeposits, type LiquiditySnapshot, type OnrampDeposit } from "@/lib/adminApi";
 import { formatUsd, toChartValue } from "@/lib/decimal";
@@ -16,12 +17,14 @@ import { formatUsd, toChartValue } from "@/lib/decimal";
  * to Paycrest / Quidax / Centiiv. On-ramps (naira in → stablecoin out) sell
  * from our own stablecoin inventory.
  *
- * Float, inventory and alerts come from GET /admin/liquidity/revenue. Its
- * `revenue` field is deliberately NOT shown: it's platform fees across every
- * provider and flow, and this page should only show what our own liquidity
- * (Nomba off-ramp + on-ramp) earns. That needs a Nomba-only figure from the
- * backend.
+ * Everything except the unmatched-payments table comes from
+ * GET /admin/liquidity/revenue?days=. Revenue shown here is `liquidityRevenue`:
+ * fees from Nomba off-ramps and on-ramps only. The response's other `revenue`
+ * field (platform fees across every provider and flow) is deliberately not
+ * shown — Centiiv/Paycrest/Quidax sends aren't our liquidity.
  */
+
+const RANGES = [7, 30, 90] as const;
 
 const ngn = (n: number) =>
   `₦${n.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -200,8 +203,10 @@ function UnmatchedDeposits({
 }
 
 export default function LiquidityPage() {
-  const fetcher = useCallback(() => getLiquidityRevenue(), []);
-  const { data, error, loading, reload } = useAdminQuery(fetcher, []);
+  const [days, setDays] = useState<number>(30);
+  const fetcher = useCallback(() => getLiquidityRevenue(days), [days]);
+  const { data, error, loading, reload } = useAdminQuery(fetcher, [days]);
+  const lr = data?.liquidityRevenue;
 
   const unmatchedFetcher = useCallback(() => getOnrampDeposits("UNMATCHED"), []);
   const unmatched = useAdminQuery(unmatchedFetcher, []);
@@ -212,15 +217,60 @@ export default function LiquidityPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight text-white">Liquidity</h1>
-        <p className="mt-1 max-w-3xl text-sm text-cowry-muted">
-          Our own liquidity through Nomba: NGN off-ramps paid from our naira float and on-ramps sold from our
-          stablecoin inventory. When Nomba can&apos;t take a payout it falls back to Paycrest, Quidax or Centiiv.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">Liquidity</h1>
+          <p className="mt-1 max-w-3xl text-sm text-cowry-muted">
+            Our own liquidity through Nomba: NGN off-ramps paid from our naira float and on-ramps sold from our
+            stablecoin inventory. Revenue here counts Nomba only — sends that fell back to Paycrest, Quidax or
+            Centiiv are left out.
+          </p>
+        </div>
+        <div role="group" aria-label="Time range" className="flex gap-1">
+          {RANGES.map((range) => (
+            <button
+              key={range}
+              type="button"
+              onClick={() => setDays(range)}
+              aria-pressed={days === range}
+              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                days === range ? "bg-cowry-green/10 text-cowry-green" : "text-cowry-muted hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              {range}d
+            </button>
+          ))}
+        </div>
       </div>
 
       {error ? <ErrorState error={error} onRetry={reload} /> : null}
+
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard
+          label="Nomba revenue"
+          value={lr ? formatUsd(lr.totalFeesUsdc) : "—"}
+          hint={`Off-ramp + on-ramp fees, last ${days} days`}
+        />
+        <StatCard
+          label="Off-ramp fees"
+          value={lr ? formatUsd(lr.offrampFeesUsdc) : "—"}
+          hint="NGN payouts from our float"
+        />
+        <StatCard
+          label="On-ramp fees"
+          value={lr ? formatUsd(lr.onrampFeesUsdc) : "—"}
+          hint="Naira in, stablecoin out"
+        />
+      </div>
+
+      {data && !lr ? (
+        <Card>
+          <CardHeader
+            title="Nomba revenue isn't on this backend yet"
+            hint="/admin/liquidity/revenue answered without liquidityRevenue. It will appear here once that backend change is deployed."
+          />
+        </Card>
+      ) : null}
 
       <div className="grid gap-4 sm:grid-cols-3">
         <StatCard
@@ -256,6 +306,44 @@ export default function LiquidityPage() {
             <InventoryCard snapshot={data} />
           </div>
 
+          {lr ? (
+            <>
+              <Card>
+                <CardHeader title="Nomba fees per day" hint="USD — off-ramp and on-ramp" />
+                <TrendLines
+                  emptyLabel="No Nomba revenue in this window"
+                  data={lr.daily.map((d) => ({
+                    label: d.date.slice(5),
+                    offramp: toChartValue(d.offrampFeesUsdc),
+                    offrampDisplay: formatUsd(d.offrampFeesUsdc),
+                    onramp: toChartValue(d.onrampFeesUsdc),
+                    onrampDisplay: formatUsd(d.onrampFeesUsdc),
+                  }))}
+                  series={[
+                    { key: "offramp", displayKey: "offrampDisplay", name: "Off-ramp fees" },
+                    { key: "onramp", displayKey: "onrampDisplay", name: "On-ramp fees" },
+                  ]}
+                />
+              </Card>
+              <Card>
+                <CardHeader title="Nomba volume per day" hint="USD — stablecoin sold to us (off-ramp) and bought from us (on-ramp)" />
+                <TrendLines
+                  emptyLabel="No Nomba volume in this window"
+                  data={lr.daily.map((d) => ({
+                    label: d.date.slice(5),
+                    offramp: toChartValue(d.offrampVolumeUsdc),
+                    offrampDisplay: formatUsd(d.offrampVolumeUsdc),
+                    onramp: toChartValue(d.onrampVolumeUsdc),
+                    onrampDisplay: formatUsd(d.onrampVolumeUsdc),
+                  }))}
+                  series={[
+                    { key: "offramp", displayKey: "offrampDisplay", name: "Off-ramp volume" },
+                    { key: "onramp", displayKey: "onrampDisplay", name: "On-ramp volume" },
+                  ]}
+                />
+              </Card>
+            </>
+          ) : null}
         </>
       ) : null}
 

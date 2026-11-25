@@ -416,6 +416,30 @@ export interface LiquidityRevenue extends LiquiditySnapshot {
    * which only reports what our own (Nomba) liquidity earns, so not validated.
    */
   revenue?: AdminMetrics["revenue"];
+  /**
+   * Nomba-only revenue for the `days` window — mirrors LiquidityRevenue in the
+   * backend's domain/admin/repository.ts. Optional so a backend that hasn't
+   * deployed it yet still renders the rest of the page.
+   */
+  liquidityRevenue?: NombaLiquidityRevenue;
+}
+
+export interface NombaLiquidityRevenueDay {
+  date: string; // YYYY-MM-DD, UTC
+  offrampVolumeUsdc: string;
+  offrampFeesUsdc: string;
+  onrampVolumeUsdc: string;
+  onrampFeesUsdc: string;
+}
+
+export interface NombaLiquidityRevenue {
+  /** Fees on sends where provider = 'nomba' and state = 'COMPLETE'. */
+  offrampFeesUsdc: string;
+  /** Fees on CREDITED on-ramp orders. */
+  onrampFeesUsdc: string;
+  totalFeesUsdc: string;
+  /** One row per UTC day, oldest first, zero-filled. */
+  daily: NombaLiquidityRevenueDay[];
 }
 
 export type OnrampDepositStatus = "CREDITED" | "UNMATCHED" | "REFUND_INITIATED" | "REFUNDED";
@@ -450,9 +474,9 @@ export interface OnrampDeposit {
  * Validated rather than trusted, like getTreasury: it's new, and a shape
  * mismatch should read as "unexpected shape", not take the page down.
  */
-export async function getLiquidityRevenue(): Promise<LiquidityRevenue> {
+export async function getLiquidityRevenue(days: number): Promise<LiquidityRevenue> {
   const path = "/admin/liquidity/revenue";
-  const raw = await adminFetch<unknown>(path);
+  const raw = await adminFetch<unknown>(`${path}?days=${days}`);
   const body = raw as Partial<LiquidityRevenue> | null;
   if (
     !body ||
@@ -463,6 +487,10 @@ export async function getLiquidityRevenue(): Promise<LiquidityRevenue> {
     !body.thresholds
   ) {
     throw new AdminShapeError(path, describeShape(raw));
+  }
+  const lr = body.liquidityRevenue as Partial<NombaLiquidityRevenue> | undefined;
+  if (lr !== undefined && (typeof lr?.totalFeesUsdc !== "string" || !Array.isArray(lr.daily))) {
+    throw new AdminShapeError(`${path} (liquidityRevenue)`, describeShape(lr));
   }
   return body as LiquidityRevenue;
 }
