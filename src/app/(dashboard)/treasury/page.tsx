@@ -1,18 +1,20 @@
 "use client";
 
 import { useCallback } from "react";
-import { Card, CardHeader } from "@/components/ui/Card";
+import { Card, CardHeader, StatCard } from "@/components/ui/Card";
 import { ChartSkeleton, ErrorState } from "@/components/ui/States";
 import { CopyButton } from "@/components/ui/CopyButton";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import {
+  getMetrics,
+  type AdminMetrics,
   AdminEndpointMissingError,
   getOverview,
   getTreasury,
   type AdminOverview,
   type TreasuryWalletBalance,
 } from "@/lib/adminApi";
-import { compareDecimalStrings } from "@/lib/decimal";
+import { compareDecimalStrings, formatUsd, subtractDecimalStrings, sumDecimalStrings } from "@/lib/decimal";
 import { explorerAddressUrlFor, explorerNameFor, truncateHash } from "@/lib/explorer";
 
 /**
@@ -156,12 +158,57 @@ function WalletCard({
   );
 }
 
+/**
+ * Fees earned vs fees actually sitting in the fee wallets.
+ *
+ * Every settled send's fee (Nomba included) is swept on-chain to these
+ * wallets, so in a clean world the two match. A gap means fees whose sweep
+ * failed (flagged on the Sends page) or money moved out of the fee wallets.
+ * Only USDC is read on-chain here, so a fee taken in another token (e.g.
+ * USDT0 on Stellar) shows up as part of the gap.
+ */
+function EarnedVsHeld({ metrics, feeWallets }: { metrics: AdminMetrics; feeWallets: TreasuryWalletBalance[] }) {
+  const earned = metrics.revenue.totalFeesUsdc;
+  const readable = feeWallets.filter((w) => w.usdc !== null);
+  const held = sumDecimalStrings(...readable.map((w) => w.usdc as string));
+  const gap = subtractDecimalStrings(earned, held) ?? "0";
+  const unreadable = feeWallets.length - readable.length;
+  const cmp = compareDecimalStrings(gap, "0");
+
+  return (
+    <section>
+      <div className="grid gap-4 sm:grid-cols-3">
+        <StatCard label="Fees earned" value={formatUsd(earned)} hint="All time, settled — same as Metrics → Revenue" />
+        <StatCard
+          label="In fee wallets now"
+          value={formatUsd(held)}
+          hint={unreadable > 0 ? `${unreadable} wallet(s) couldn't be read — total is incomplete` : "USDC, read live on-chain"}
+        />
+        <StatCard
+          label={cmp === -1 ? "More in wallets than earned" : "Not in fee wallets"}
+          value={formatUsd(cmp === -1 ? (subtractDecimalStrings(held, earned) ?? "0") : gap)}
+          hint={
+            cmp === 1
+              ? "Failed fee sweeps (see Sends) or money moved out"
+              : cmp === 0
+                ? "Everything earned is in the wallets"
+                : "Includes money not from fees, e.g. a top-up"
+          }
+        />
+      </div>
+    </section>
+  );
+}
+
 export default function TreasuryPage() {
   const treasuryFetcher = useCallback(() => getTreasury(), []);
   const treasury = useAdminQuery(treasuryFetcher, []);
 
   const overviewFetcher = useCallback(() => getOverview(), []);
   const overview = useAdminQuery(overviewFetcher, []);
+
+  const metricsFetcher = useCallback(() => getMetrics(), []);
+  const metrics = useAdminQuery(metricsFetcher, []);
 
   const notDeployedYet = treasury.error instanceof AdminEndpointMissingError;
 
@@ -192,6 +239,8 @@ export default function TreasuryPage() {
 
       {treasury.data ? (
         <>
+          {metrics.data ? <EarnedVsHeld metrics={metrics.data} feeWallets={treasury.data.feeTreasury} /> : null}
+
           <section>
             <h2 className="mb-3 text-sm font-semibold text-white">
               Fee treasury
