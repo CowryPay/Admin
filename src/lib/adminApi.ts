@@ -527,3 +527,49 @@ export function markDepositCompanyFunding(id: string, actor: string, note: strin
 export function refundDeposit(id: string, actor: string, note?: string): Promise<unknown> {
   return adminPost(`/admin/onramp/deposits/${id}/refund`, note ? { actor, note } : { actor });
 }
+
+/**
+ * GET /admin/nomba/transactions?days= — the Nomba liquidity sub-account's own
+ * transaction list (money in and out, including transfers made by hand in
+ * Nomba's dashboard), each labelled with what it matches on our side.
+ *
+ * Built against the agreed request shape ahead of the backend shipping it;
+ * a 404 means it isn't deployed yet. Validated so a different shape reads as
+ * "unexpected shape" rather than crashing the page.
+ */
+export type NombaTxMatch = "nomba_payout" | "onramp_deposit" | "onramp_refund";
+
+export interface NombaTransaction {
+  id: string;
+  timeCreated: string;
+  amountNgn: string;
+  direction: "in" | "out";
+  status: string;
+  type: string;
+  merchantTxRef?: string | null;
+  /** null = not in our records — e.g. a manual transfer made in Nomba. */
+  matchedTo: NombaTxMatch | null;
+  matchedId: string | null;
+}
+
+export interface NombaTransactions {
+  transactions: NombaTransaction[];
+  totals: { inNgn: string; outNgn: string };
+}
+
+export async function getNombaTransactions(days: number): Promise<NombaTransactions> {
+  const path = "/admin/nomba/transactions";
+  const raw = await adminFetch<unknown>(`${path}?days=${days}`);
+  const body = raw as Partial<NombaTransactions> | null;
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray(body.transactions) ||
+    !body.totals ||
+    typeof body.totals.inNgn !== "string" ||
+    typeof body.totals.outNgn !== "string"
+  ) {
+    throw new AdminShapeError(path, describeShape(raw));
+  }
+  return body as NombaTransactions;
+}

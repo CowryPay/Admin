@@ -8,7 +8,10 @@ import { TrendLines } from "@/components/charts/TrendLines";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
 import {
   AdminAuthError,
+  AdminEndpointMissingError,
   getLiquidityRevenue,
+  getNombaTransactions,
+  type NombaTransaction,
   getOnrampDeposits,
   markDepositCompanyFunding,
   refundDeposit,
@@ -404,6 +407,120 @@ function UnmatchedDeposits({
   );
 }
 
+const MATCH_LABEL: Record<string, string> = {
+  nomba_payout: "Off-ramp payout",
+  onramp_deposit: "On-ramp payment",
+  onramp_refund: "On-ramp refund",
+};
+
+/**
+ * Every naira movement in and out of the Nomba liquidity account, read from
+ * Nomba itself. Rows with no match in our records (matchedTo: null) are the
+ * ones worth a look — usually a transfer made by hand in Nomba's dashboard —
+ * so they're flagged and can be filtered to.
+ */
+function FloatMovements({ days }: { days: number }) {
+  const fetcher = useCallback(() => getNombaTransactions(days), [days]);
+  const { data, error, loading, reload } = useAdminQuery(fetcher, [days]);
+  const [onlyUnmatched, setOnlyUnmatched] = useState(false);
+
+  const all = data?.transactions ?? [];
+  const unmatchedCount = all.filter((t) => t.matchedTo === null).length;
+  const rows: NombaTransaction[] = onlyUnmatched ? all.filter((t) => t.matchedTo === null) : all;
+  const net = data ? toChartValue(data.totals.inNgn) - toChartValue(data.totals.outNgn) : 0;
+
+  return (
+    <Card>
+      <CardHeader
+        title="Float movements"
+        hint={`Every naira in and out of the Nomba liquidity account, last ${days} days — read from Nomba, not our database`}
+        action={
+          data && unmatchedCount > 0 ? (
+            <button
+              type="button"
+              onClick={() => setOnlyUnmatched((v) => !v)}
+              aria-pressed={onlyUnmatched}
+              className={`rounded-lg px-2.5 py-1 text-xs font-medium transition ${
+                onlyUnmatched ? "bg-status-warning/10 text-status-warning" : "text-cowry-muted hover:bg-white/5 hover:text-white"
+              }`}
+            >
+              Not in our records ({unmatchedCount})
+            </button>
+          ) : null
+        }
+      />
+
+      {error instanceof AdminEndpointMissingError ? (
+        <EmptyState label="Waiting on GET /admin/nomba/transactions — this fills in once the backend ships it." />
+      ) : error ? (
+        <ErrorState error={error} onRetry={reload} />
+      ) : loading ? (
+        <ChartSkeleton height={160} />
+      ) : data ? (
+        <>
+          <div className="mb-4 grid gap-3 sm:grid-cols-3">
+            <div className="rounded-xl border border-cowry-border bg-cowry-dark/50 p-3">
+              <p className="text-xs text-cowry-muted">Money in</p>
+              <p className="tabular mt-1 text-lg font-semibold text-status-good">{ngn(toChartValue(data.totals.inNgn))}</p>
+            </div>
+            <div className="rounded-xl border border-cowry-border bg-cowry-dark/50 p-3">
+              <p className="text-xs text-cowry-muted">Money out</p>
+              <p className="tabular mt-1 text-lg font-semibold text-status-serious">{ngn(toChartValue(data.totals.outNgn))}</p>
+            </div>
+            <div className="rounded-xl border border-cowry-border bg-cowry-dark/50 p-3">
+              <p className="text-xs text-cowry-muted">Net</p>
+              <p className="tabular mt-1 text-lg font-semibold text-white">
+                {net < 0 ? "−" : ""}
+                {ngn(Math.abs(net))}
+              </p>
+            </div>
+          </div>
+
+          {rows.length === 0 ? (
+            <EmptyState label="No movements in this window" />
+          ) : (
+            <TableScroll>
+              <table className="w-full">
+                <thead>
+                  <tr>
+                    <Th>Time</Th>
+                    <Th align="right">Amount</Th>
+                    <Th>What it was</Th>
+                    <Th>Status</Th>
+                    <Th>Nomba type</Th>
+                    <Th>Reference</Th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((t) => (
+                    <tr key={t.id} className="border-b border-cowry-border/50 last:border-0">
+                      <Td className="text-cowry-muted">{new Date(t.timeCreated).toLocaleString()}</Td>
+                      <Td align="right" numeric className={t.direction === "in" ? "text-status-good" : "text-status-serious"}>
+                        {t.direction === "in" ? "+" : "−"}
+                        {ngn(toChartValue(t.amountNgn))}
+                      </Td>
+                      <Td>
+                        {t.matchedTo ? (
+                          <span className="text-white">{MATCH_LABEL[t.matchedTo] ?? t.matchedTo}</span>
+                        ) : (
+                          <Badge tone="warning">Not in our records</Badge>
+                        )}
+                      </Td>
+                      <Td className="text-cowry-muted">{t.status}</Td>
+                      <Td className="text-cowry-muted">{t.type}</Td>
+                      <Td className="max-w-[200px] truncate text-cowry-muted">{t.merchantTxRef ?? "—"}</Td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </TableScroll>
+          )}
+        </>
+      ) : null}
+    </Card>
+  );
+}
+
 export default function LiquidityPage() {
   const [days, setDays] = useState<number>(30);
   const fetcher = useCallback(() => getLiquidityRevenue(days), [days]);
@@ -548,6 +665,8 @@ export default function LiquidityPage() {
           ) : null}
         </>
       ) : null}
+
+      <FloatMovements days={Math.min(days, 90)} />
 
       <UnmatchedDeposits query={unmatched} />
     </div>
