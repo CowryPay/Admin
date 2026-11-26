@@ -135,6 +135,16 @@ export interface AdminSendDiagnostic {
    * a sweep that ran and failed. The Sends table flags these distinctly.
    */
   feeSweepTrigger: string | null;
+  /*
+   * Receipt fields — present on GET /admin/sends/:id's `send` today, and
+   * requested for the list too. Optional so the list renders with or without
+   * them; the Off-ramps page shows them in the table once the list has them.
+   */
+  fiatCurrency?: string;
+  fiatAmount?: string | null;
+  rate?: string | null;
+  recipient?: SendRecipient;
+  bankSessionId?: string | null;
 }
 
 /**
@@ -572,4 +582,59 @@ export async function getNombaTransactions(days: number): Promise<NombaTransacti
     throw new AdminShapeError(path, describeShape(raw));
   }
   return body as NombaTransactions;
+}
+
+// ---------------------------------------------------------------------------
+// One send, in full — GET /admin/sends/:id
+// ---------------------------------------------------------------------------
+
+/** Mirrors SendRecipient in the backend's types.ts. */
+export interface SendRecipient {
+  institution: string;
+  /** Human-readable bank name, e.g. "OPay" for code "OPAYNGPC". */
+  institutionName?: string;
+  accountIdentifier: string;
+  accountName: string;
+  memo?: string;
+}
+
+/** Mirrors Send in the backend's types.ts. */
+export interface AdminSend {
+  id: string;
+  userId: string;
+  tokenSymbol: string;
+  chain: string;
+  amountHuman: string;
+  fiatCurrency: string;
+  recipient: SendRecipient;
+  rate: string | null;
+  feeAmount: string | null;
+  provider: string;
+  providerOrderId: string | null;
+  reference: string;
+  withdrawTxHash: string | null;
+  state: string;
+  createdAt: string;
+  updatedAt: string;
+  // Nomba sends only — null for every other provider.
+  fiatAmount: string | null;
+  providerTransferId: string | null;
+  bankSessionId: string | null;
+  bankRrn: string | null;
+  providerRecipientName: string | null;
+  providerBankName: string | null;
+  providerFee: string | null;
+}
+
+export interface AdminSendTransition {
+  id: string;
+  fromState: string | null;
+  toState: string;
+  trigger: string;
+  actor: string;
+  createdAt: string;
+}
+
+export function getSendDetail(id: string): Promise<{ send: AdminSend; transitions: AdminSendTransition[] }> {
+  return adminFetch<{ send: AdminSend; transitions: AdminSendTransition[] }>(`/admin/sends/${encodeURIComponent(id)}`);
 }
