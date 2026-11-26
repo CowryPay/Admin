@@ -135,6 +135,16 @@ export interface AdminSendDiagnostic {
    * a sweep that ran and failed. The Sends table flags these distinctly.
    */
   feeSweepTrigger: string | null;
+  /*
+   * Receipt fields — present on GET /admin/sends/:id's `send` today, and
+   * requested for the list too. Optional so the list renders with or without
+   * them; the Off-ramps page shows them in the table once the list has them.
+   */
+  fiatCurrency?: string;
+  fiatAmount?: string | null;
+  rate?: string | null;
+  recipient?: SendRecipient;
+  bankSessionId?: string | null;
 }
 
 /**
@@ -383,4 +393,248 @@ export async function getTreasury(): Promise<TreasurySnapshot> {
     feeTreasury: snapshot.feeTreasury as TreasuryWalletBalance[],
     operational: snapshot.operational as TreasuryWalletBalance[],
   };
+}
+
+// ---------------------------------------------------------------------------
+// Own liquidity (Nomba)
+// ---------------------------------------------------------------------------
+
+/** GET /admin/liquidity — live Nomba float + company inventory + open alerts. */
+export interface LiquiditySnapshot {
+  nombaFloat: { balanceNgn: number | null; error: string | null };
+  companyInventory: {
+    chain: string;
+    tokenSymbol: string;
+    availableBalance: string;
+    reservedBalance: string;
+    bufferInUserPool: string;
+    updatedAt: string;
+  }[];
+  openAlerts: string[];
+  thresholds: {
+    nombaFloatLowNgn: number;
+    nombaFloatHighNgn: number;
+    inventoryLowUsd: number;
+    inventoryHighUsd: number;
+  };
+}
+
+export interface LiquidityRevenue extends LiquiditySnapshot {
+  /**
+   * Platform fees on settled transactions across EVERY provider and flow, all
+   * time — the same figure as /admin/metrics. Not shown on the Liquidity page,
+   * which only reports what our own (Nomba) liquidity earns, so not validated.
+   */
+  revenue?: AdminMetrics["revenue"];
+  /**
+   * Nomba-only revenue for the `days` window — mirrors LiquidityRevenue in the
+   * backend's domain/admin/repository.ts. Optional so a backend that hasn't
+   * deployed it yet still renders the rest of the page.
+   */
+  liquidityRevenue?: NombaLiquidityRevenue;
+}
+
+export interface NombaLiquidityRevenueDay {
+  date: string; // YYYY-MM-DD, UTC
+  offrampVolumeUsdc: string;
+  offrampFeesUsdc: string;
+  onrampVolumeUsdc: string;
+  onrampFeesUsdc: string;
+}
+
+export interface NombaLiquidityRevenue {
+  /** Fees on sends where provider = 'nomba' and state = 'COMPLETE'. */
+  offrampFeesUsdc: string;
+  /** Fees on CREDITED on-ramp orders. */
+  onrampFeesUsdc: string;
+  totalFeesUsdc: string;
+  /** One row per UTC day, oldest first, zero-filled. */
+  daily: NombaLiquidityRevenueDay[];
+}
+
+export type OnrampDepositStatus =
+  | "CREDITED"
+  | "UNMATCHED"
+  | "REFUND_INITIATED"
+  | "REFUNDED"
+  | "POSSIBLE_DUPLICATE"
+  | "COMPANY_FUNDING";
+
+/** One naira inflow into the Nomba sub-account. Mirrors OnrampDeposit in domain/onramp/repository.ts. */
+export interface OnrampDeposit {
+  id: string;
+  nombaTransactionId: string;
+  sessionId: string | null;
+  userId: string | null;
+  orderId: string | null;
+  amount: string;
+  senderName: string | null;
+  senderAccountNumber: string | null;
+  senderBankCode: string | null;
+  senderBankName: string | null;
+  narration: string | null;
+  paidAt: string | null;
+  status: OnrampDepositStatus;
+  reason: string | null;
+  refundReference: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * GET /admin/liquidity/revenue — the /admin/liquidity snapshot plus platform
+ * fee revenue (the same computeRevenue() /admin/metrics uses: settled sends,
+ * crypto withdrawals and cross-chain sends). Mirrors the route in the
+ * backend's routes/admin.ts.
+ *
+ * Validated rather than trusted, like getTreasury: it's new, and a shape
+ * mismatch should read as "unexpected shape", not take the page down.
+ */
+export async function getLiquidityRevenue(days: number): Promise<LiquidityRevenue> {
+  const path = "/admin/liquidity/revenue";
+  const raw = await adminFetch<unknown>(`${path}?days=${days}`);
+  const body = raw as Partial<LiquidityRevenue> | null;
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !body.nombaFloat ||
+    !Array.isArray(body.companyInventory) ||
+    !Array.isArray(body.openAlerts) ||
+    !body.thresholds
+  ) {
+    throw new AdminShapeError(path, describeShape(raw));
+  }
+  const lr = body.liquidityRevenue as Partial<NombaLiquidityRevenue> | undefined;
+  if (lr !== undefined && (typeof lr?.totalFeesUsdc !== "string" || !Array.isArray(lr.daily))) {
+    throw new AdminShapeError(`${path} (liquidityRevenue)`, describeShape(lr));
+  }
+  return body as LiquidityRevenue;
+}
+
+export function getLiquidity(): Promise<LiquiditySnapshot> {
+  return adminFetch<LiquiditySnapshot>("/admin/liquidity");
+}
+
+/** Oldest first, capped at 200 backend-side. */
+export function getOnrampDeposits(status: OnrampDepositStatus): Promise<{ deposits: OnrampDeposit[] }> {
+  return adminFetch<{ deposits: OnrampDeposit[] }>(`/admin/onramp/deposits?status=${status}`);
+}
+
+/**
+ * Marks an UNMATCHED deposit as company capital (a float top-up): it leaves
+ * the refund queue and can no longer be claimed by Session ID. One-way.
+ * Needs the full admin key.
+ */
+export function markDepositCompanyFunding(id: string, actor: string, note: string): Promise<{ ok: true }> {
+  return adminPost(`/admin/onramp/deposits/${id}/mark-company-funding`, { actor, note });
+}
+
+/**
+ * Sends an UNMATCHED deposit back to the account it came from, through Nomba.
+ * Real money leaves the float. Fixed reference per deposit backend-side, so a
+ * retry can't pay twice. Needs the full admin key.
+ */
+export function refundDeposit(id: string, actor: string, note?: string): Promise<unknown> {
+  return adminPost(`/admin/onramp/deposits/${id}/refund`, note ? { actor, note } : { actor });
+}
+
+/**
+ * GET /admin/nomba/transactions?days= — the Nomba liquidity sub-account's own
+ * transaction list (money in and out, including transfers made by hand in
+ * Nomba's dashboard), each labelled with what it matches on our side.
+ *
+ * Built against the agreed request shape ahead of the backend shipping it;
+ * a 404 means it isn't deployed yet. Validated so a different shape reads as
+ * "unexpected shape" rather than crashing the page.
+ */
+export type NombaTxMatch = "nomba_payout" | "onramp_deposit" | "onramp_refund";
+
+export interface NombaTransaction {
+  id: string;
+  timeCreated: string;
+  amountNgn: string;
+  direction: "in" | "out";
+  status: string;
+  type: string;
+  merchantTxRef?: string | null;
+  /** null = not in our records — e.g. a manual transfer made in Nomba. */
+  matchedTo: NombaTxMatch | null;
+  matchedId: string | null;
+}
+
+export interface NombaTransactions {
+  transactions: NombaTransaction[];
+  totals: { inNgn: string; outNgn: string };
+}
+
+export async function getNombaTransactions(days: number): Promise<NombaTransactions> {
+  const path = "/admin/nomba/transactions";
+  const raw = await adminFetch<unknown>(`${path}?days=${days}`);
+  const body = raw as Partial<NombaTransactions> | null;
+  if (
+    !body ||
+    typeof body !== "object" ||
+    !Array.isArray(body.transactions) ||
+    !body.totals ||
+    typeof body.totals.inNgn !== "string" ||
+    typeof body.totals.outNgn !== "string"
+  ) {
+    throw new AdminShapeError(path, describeShape(raw));
+  }
+  return body as NombaTransactions;
+}
+
+// ---------------------------------------------------------------------------
+// One send, in full — GET /admin/sends/:id
+// ---------------------------------------------------------------------------
+
+/** Mirrors SendRecipient in the backend's types.ts. */
+export interface SendRecipient {
+  institution: string;
+  /** Human-readable bank name, e.g. "OPay" for code "OPAYNGPC". */
+  institutionName?: string;
+  accountIdentifier: string;
+  accountName: string;
+  memo?: string;
+}
+
+/** Mirrors Send in the backend's types.ts. */
+export interface AdminSend {
+  id: string;
+  userId: string;
+  tokenSymbol: string;
+  chain: string;
+  amountHuman: string;
+  fiatCurrency: string;
+  recipient: SendRecipient;
+  rate: string | null;
+  feeAmount: string | null;
+  provider: string;
+  providerOrderId: string | null;
+  reference: string;
+  withdrawTxHash: string | null;
+  state: string;
+  createdAt: string;
+  updatedAt: string;
+  // Nomba sends only — null for every other provider.
+  fiatAmount: string | null;
+  providerTransferId: string | null;
+  bankSessionId: string | null;
+  bankRrn: string | null;
+  providerRecipientName: string | null;
+  providerBankName: string | null;
+  providerFee: string | null;
+}
+
+export interface AdminSendTransition {
+  id: string;
+  fromState: string | null;
+  toState: string;
+  trigger: string;
+  actor: string;
+  createdAt: string;
+}
+
+export function getSendDetail(id: string): Promise<{ send: AdminSend; transitions: AdminSendTransition[] }> {
+  return adminFetch<{ send: AdminSend; transitions: AdminSendTransition[] }>(`/admin/sends/${encodeURIComponent(id)}`);
 }
