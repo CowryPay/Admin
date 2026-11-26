@@ -6,7 +6,15 @@ import { ChartSkeleton, EmptyState, ErrorState } from "@/components/ui/States";
 import { TableScroll, Td, Th } from "@/components/ui/Table";
 import { TrendLines } from "@/components/charts/TrendLines";
 import { useAdminQuery } from "@/hooks/useAdminQuery";
-import { getLiquidityRevenue, getOnrampDeposits, type LiquiditySnapshot, type OnrampDeposit } from "@/lib/adminApi";
+import {
+  AdminAuthError,
+  getLiquidityRevenue,
+  getOnrampDeposits,
+  markDepositCompanyFunding,
+  refundDeposit,
+  type LiquiditySnapshot,
+  type OnrampDeposit,
+} from "@/lib/adminApi";
 import { formatUsd, toChartValue } from "@/lib/decimal";
 
 /*
@@ -145,6 +153,159 @@ function InventoryCard({ snapshot }: { snapshot: LiquiditySnapshot }) {
   );
 }
 
+type DepositAction = "company-funding" | "refund";
+
+/**
+ * Confirmation for the two irreversible actions on an unmatched payment.
+ *
+ * Both are one-way on the backend: company funding takes the payment out of
+ * the refund queue and the Session ID claim path for good; a refund sends the
+ * naira back out of the float through Nomba. So the dialog restates exactly
+ * which payment, and asks who is acting and why — the backend records both.
+ *
+ * A 401 here is NOT routed through useAdminQuery's sign-out: these endpoints
+ * need the full ADMIN_API_KEY, and a read-only metrics key failing on them
+ * doesn't mean the session is dead.
+ */
+function ConfirmDepositAction({
+  deposit,
+  action,
+  onClose,
+  onDone,
+}: {
+  deposit: OnrampDeposit;
+  action: DepositAction;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const [actor, setActor] = useState(() => {
+    try {
+      return sessionStorage.getItem("cowry-admin-actor") ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [note, setNote] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<string | null>(null);
+
+  const isRefund = action === "refund";
+  const noteRequired = !isRefund;
+  const canSubmit = actor.trim() !== "" && (!noteRequired || note.trim() !== "") && !busy;
+
+  async function submit() {
+    setBusy(true);
+    setFailure(null);
+    try {
+      sessionStorage.setItem("cowry-admin-actor", actor.trim());
+    } catch {
+      // Only a convenience — the action still goes through without it.
+    }
+    try {
+      if (isRefund) await refundDeposit(deposit.id, actor.trim(), note.trim() || undefined);
+      else await markDepositCompanyFunding(deposit.id, actor.trim(), note.trim());
+      onDone();
+    } catch (err) {
+      setFailure(
+        err instanceof AdminAuthError
+          ? "This action needs the full admin key (ADMIN_API_KEY). Log out and sign in with it, then try again."
+          : err instanceof Error
+            ? err.message
+            : String(err),
+      );
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="deposit-action-title"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget && !busy) onClose();
+      }}
+    >
+      <div className="w-full max-w-md rounded-2xl border border-cowry-border bg-cowry-card p-5">
+        <h2 id="deposit-action-title" className="text-base font-semibold text-white">
+          {isRefund ? "Refund this payment?" : "Mark as company funding?"}
+        </h2>
+
+        <dl className="mt-4 space-y-1 rounded-xl border border-cowry-border bg-cowry-dark/50 p-3 text-sm">
+          <div className="flex justify-between gap-4">
+            <dt className="text-cowry-muted">Amount</dt>
+            <dd className="tabular font-semibold text-white">{ngn(toChartValue(deposit.amount))}</dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-cowry-muted">From</dt>
+            <dd className="text-right text-white">
+              {deposit.senderName ?? "—"}
+              {deposit.senderBankName ? <span className="text-cowry-muted"> · {deposit.senderBankName}</span> : null}
+            </dd>
+          </div>
+          <div className="flex justify-between gap-4">
+            <dt className="text-cowry-muted">Received</dt>
+            <dd className="text-white">{new Date(deposit.paidAt ?? deposit.createdAt).toLocaleString()}</dd>
+          </div>
+        </dl>
+
+        <p className="mt-3 text-sm text-cowry-muted">
+          {isRefund
+            ? "Sends the full amount back to the account it came from, out of the Nomba float. This can't be undone."
+            : "Records this as our own money topping up the float. It leaves the refund queue and no user can claim it. This can't be undone."}
+        </p>
+
+        <label className="mt-4 block text-xs font-medium text-cowry-muted">
+          Your name
+          <input
+            value={actor}
+            onChange={(e) => setActor(e.target.value)}
+            className="mt-1 w-full rounded-lg border border-cowry-border bg-cowry-dark px-3 py-2 text-sm text-white outline-none focus:border-cowry-green"
+            autoFocus
+          />
+        </label>
+        <label className="mt-3 block text-xs font-medium text-cowry-muted">
+          {noteRequired ? "Reason" : "Reason (optional)"}
+          <input
+            value={note}
+            onChange={(e) => setNote(e.target.value)}
+            placeholder={isRefund ? "e.g. no order, user asked for refund" : "e.g. float top-up from Robert's account"}
+            className="mt-1 w-full rounded-lg border border-cowry-border bg-cowry-dark px-3 py-2 text-sm text-white outline-none placeholder:text-cowry-muted/60 focus:border-cowry-green"
+          />
+        </label>
+
+        {failure ? (
+          <p className="mt-3 rounded-lg border border-status-critical/30 bg-status-critical/5 p-3 text-xs text-status-critical">
+            {failure}
+          </p>
+        ) : null}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="rounded-lg border border-cowry-border px-3 py-1.5 text-sm text-cowry-muted transition hover:text-white disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={submit}
+            disabled={!canSubmit}
+            className={`rounded-lg px-3 py-1.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-40 ${
+              isRefund ? "bg-status-critical text-white hover:opacity-90" : "bg-cowry-green text-black hover:opacity-90"
+            }`}
+          >
+            {busy ? "Working…" : isRefund ? `Refund ${ngn(toChartValue(deposit.amount))}` : "Mark as company funding"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // Takes the page's query rather than running its own, so the stat card and
 // the table share one request.
 function UnmatchedDeposits({
@@ -153,13 +314,18 @@ function UnmatchedDeposits({
   query: ReturnType<typeof useAdminQuery<{ deposits: OnrampDeposit[] }>>;
 }) {
   const deposits = data?.deposits ?? [];
+  const [pending, setPending] = useState<{ deposit: OnrampDeposit; action: DepositAction } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   return (
     <Card>
       <CardHeader
         title="Unmatched on-ramp payments"
-        hint="Naira that arrived but couldn't be matched to an order. The user can claim it with their Session ID, or it gets refunded."
+        hint="Naira that arrived but couldn't be matched to an order. A customer can claim it with their Session ID; otherwise refund it, or mark our own top-ups as company funding."
       />
+      {notice ? (
+        <p className="mb-3 rounded-lg border border-status-good/30 bg-status-good/5 p-3 text-xs text-status-good">{notice}</p>
+      ) : null}
       {error ? (
         <ErrorState error={error} onRetry={reload} />
       ) : loading ? (
@@ -177,6 +343,7 @@ function UnmatchedDeposits({
                 <Th>Bank</Th>
                 <Th>Reason</Th>
                 <Th>Narration</Th>
+                <Th align="right">Action</Th>
               </tr>
             </thead>
             <tbody>
@@ -192,12 +359,47 @@ function UnmatchedDeposits({
                     <Badge tone="warning">{(d.reason ?? "unknown").replace(/_/g, " ")}</Badge>
                   </Td>
                   <Td className="max-w-[240px] truncate text-cowry-muted">{d.narration ?? "—"}</Td>
+                  <Td align="right">
+                    <div className="flex justify-end gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => setPending({ deposit: d, action: "company-funding" })}
+                        className="rounded-lg border border-cowry-border px-2 py-1 text-xs font-medium text-white transition hover:border-cowry-green hover:text-cowry-green"
+                      >
+                        Company funding
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setPending({ deposit: d, action: "refund" })}
+                        className="rounded-lg border border-cowry-border px-2 py-1 text-xs font-medium text-cowry-muted transition hover:border-status-critical hover:text-status-critical"
+                      >
+                        Refund
+                      </button>
+                    </div>
+                  </Td>
                 </tr>
               ))}
             </tbody>
           </table>
         </TableScroll>
       )}
+      {pending ? (
+        <ConfirmDepositAction
+          deposit={pending.deposit}
+          action={pending.action}
+          onClose={() => setPending(null)}
+          onDone={() => {
+            const amount = ngn(toChartValue(pending.deposit.amount));
+            setNotice(
+              pending.action === "refund"
+                ? `Refund of ${amount} started. It's no longer in this list.`
+                : `${amount} marked as company funding.`,
+            );
+            setPending(null);
+            reload();
+          }}
+        />
+      ) : null}
     </Card>
   );
 }

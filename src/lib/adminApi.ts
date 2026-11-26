@@ -442,7 +442,13 @@ export interface NombaLiquidityRevenue {
   daily: NombaLiquidityRevenueDay[];
 }
 
-export type OnrampDepositStatus = "CREDITED" | "UNMATCHED" | "REFUND_INITIATED" | "REFUNDED";
+export type OnrampDepositStatus =
+  | "CREDITED"
+  | "UNMATCHED"
+  | "REFUND_INITIATED"
+  | "REFUNDED"
+  | "POSSIBLE_DUPLICATE"
+  | "COMPANY_FUNDING";
 
 /** One naira inflow into the Nomba sub-account. Mirrors OnrampDeposit in domain/onramp/repository.ts. */
 export interface OnrampDeposit {
@@ -502,4 +508,22 @@ export function getLiquidity(): Promise<LiquiditySnapshot> {
 /** Oldest first, capped at 200 backend-side. */
 export function getOnrampDeposits(status: OnrampDepositStatus): Promise<{ deposits: OnrampDeposit[] }> {
   return adminFetch<{ deposits: OnrampDeposit[] }>(`/admin/onramp/deposits?status=${status}`);
+}
+
+/**
+ * Marks an UNMATCHED deposit as company capital (a float top-up): it leaves
+ * the refund queue and can no longer be claimed by Session ID. One-way.
+ * Needs the full admin key.
+ */
+export function markDepositCompanyFunding(id: string, actor: string, note: string): Promise<{ ok: true }> {
+  return adminPost(`/admin/onramp/deposits/${id}/mark-company-funding`, { actor, note });
+}
+
+/**
+ * Sends an UNMATCHED deposit back to the account it came from, through Nomba.
+ * Real money leaves the float. Fixed reference per deposit backend-side, so a
+ * retry can't pay twice. Needs the full admin key.
+ */
+export function refundDeposit(id: string, actor: string, note?: string): Promise<unknown> {
+  return adminPost(`/admin/onramp/deposits/${id}/refund`, note ? { actor, note } : { actor });
 }
